@@ -68,14 +68,33 @@ def health():
 
 
 @app.get("/api/health/llm")
-def llm_health():
+async def llm_health():
+    """Probe configured LLM endpoints with a hard time bound.
+
+    A dead or unreachable model server must not turn a health check into a hang.
+    Both probes run concurrently, each capped at 6 seconds.
+    """
+    import asyncio
     from services.llm import get_llm
-    results = {}
-    for task in ["extraction", "chat"]:
+
+    def probe(task: str) -> dict:
         try:
             llm = get_llm(task)
-            resp = llm.chat([{"role": "user", "content": "Say ok"}], temperature=0, max_tokens=10)
-            results[task] = {"ok": True, "model": getattr(llm, "model", "unknown")}
+            resp = llm.chat(
+                [{"role": "user", "content": "Say ok"}],
+                temperature=0, max_tokens=10,
+            )
+            return {"ok": bool(resp and resp.strip()),
+                    "model": getattr(llm, "model", "unknown")}
         except Exception as e:
-            results[task] = {"ok": False, "error": str(e)[:200]}
+            return {"ok": False, "error": f"{type(e).__name__}: {str(e)[:160]}"}
+
+    async def bounded(task: str) -> dict:
+        try:
+            return await asyncio.wait_for(asyncio.to_thread(probe, task), timeout=6)
+        except asyncio.TimeoutError:
+            return {"ok": False, "error": "probe timed out after 6s"}
+
+    tasks = ["extraction", "chat"]
+    results = dict(zip(tasks, await asyncio.gather(*(bounded(t) for t in tasks))))
     return {"llm": results}

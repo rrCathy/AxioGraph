@@ -1,5 +1,33 @@
 from abc import ABC, abstractmethod
-from openai import OpenAI
+import httpx
+from openai import OpenAI, AsyncOpenAI
+
+
+def _is_local(base_url: str) -> bool:
+    return "127.0.0.1" in base_url or "localhost" in base_url
+
+
+def _make_client(api_key: str, base_url: str, *, async_client: bool = False):
+    """Build an OpenAI-compatible client.
+
+    Loopback endpoints (the local model server, Ollama) must bypass the ambient
+    HTTP_PROXY/HTTPS_PROXY: httpx otherwise sends 127.0.0.1 requests through a
+    proxy that never answers, so a dead local service hangs every LLM call for
+    ~9s. Local clients also fail fast (3s connect, no retries); remote APIs keep
+    the system proxy and a generous read timeout for long extraction prompts.
+    """
+    if _is_local(base_url):
+        timeout = httpx.Timeout(30.0, connect=3.0)
+        http_client = (
+            httpx.AsyncClient(trust_env=False, timeout=timeout)
+            if async_client
+            else httpx.Client(trust_env=False, timeout=timeout)
+        )
+        cls = AsyncOpenAI if async_client else OpenAI
+        return cls(api_key=api_key, base_url=base_url,
+                   http_client=http_client, max_retries=0)
+    cls = AsyncOpenAI if async_client else OpenAI
+    return cls(api_key=api_key, base_url=base_url, timeout=120.0, max_retries=2)
 
 
 class LLMProvider(ABC):
@@ -10,7 +38,7 @@ class LLMProvider(ABC):
 
 class OpenAIProvider(LLMProvider):
     def __init__(self, api_key: str, base_url: str, model: str):
-        self.client = OpenAI(api_key=api_key, base_url=base_url)
+        self.client = _make_client(api_key, base_url)
         self.model = model
 
     def chat(self, messages: list[dict], **kwargs) -> str:
@@ -25,7 +53,7 @@ class OpenAIProvider(LLMProvider):
 
 class OllamaProvider(LLMProvider):
     def __init__(self, host: str, model: str):
-        self.client = OpenAI(base_url=f"{host}/v1", api_key="ollama")
+        self.client = _make_client("ollama", f"{host}/v1")
         self.model = model
 
     def chat(self, messages: list[dict], **kwargs) -> str:
@@ -40,10 +68,7 @@ class OllamaProvider(LLMProvider):
 
 class GLMProvider(LLMProvider):
     def __init__(self, api_key: str, model: str):
-        self.client = OpenAI(
-            api_key=api_key,
-            base_url="https://open.bigmodel.cn/api/paas/v4",
-        )
+        self.client = _make_client(api_key, "https://open.bigmodel.cn/api/paas/v4")
         self.model = model
 
     def chat(self, messages: list[dict], **kwargs) -> str:
@@ -105,7 +130,6 @@ def get_embedding_func():
     from config import settings
 
     if settings.embedding_api_key:
-        from openai import AsyncOpenAI
 
         @wrap_embedding_func_with_attrs(
             embedding_dim=settings.embedding_dim,
@@ -113,9 +137,10 @@ def get_embedding_func():
             model_name=settings.embedding_model,
         )
         async def embedding_func(texts: list[str]) -> np.ndarray:
-            client = AsyncOpenAI(
-                api_key=settings.embedding_api_key,
-                base_url=settings.embedding_base_url,
+            client = _make_client(
+                settings.embedding_api_key,
+                settings.embedding_base_url,
+                async_client=True,
             )
             response = await client.embeddings.create(
                 model=settings.embedding_model,

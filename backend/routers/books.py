@@ -38,17 +38,19 @@ def _check_llm():
         llm = get_llm("extraction")
         resp = llm.chat([{"role": "user", "content": "Say 1"}], temperature=0, max_tokens=2)
         if not resp or not resp.strip():
-            return (False, "GLM returned empty response — model may be overloaded")
+            return (False, "LLM returned empty response — model may be overloaded")
         return (True, None)
     except Exception as e:
         msg = str(e)
         if "429" in msg or "rate" in msg.lower() or "访问量过大" in msg:
-            return (False, "GLM rate limited — try again in a minute")
+            return (False, "LLM rate limited — try again in a minute")
         if "401" in msg or "403" in msg or "auth" in msg.lower():
-            return (False, "Invalid GLM API key — check .env")
+            return (False, "Invalid LLM API key — check backend/.env")
         if "connect" in msg.lower() or "timed out" in msg.lower() or "timeout" in msg.lower():
-            return (False, "Cannot reach GLM server — check network")
-        return (False, msg[:200])
+            return (False, "Cannot reach the configured LLM server — check "
+                           "EXTRACTION_MODEL / base URL in backend/.env and whether "
+                           "the local model service is running")
+        return (False, f"{type(e).__name__}: {msg[:180]}")
 
 
 def _process_book(book_id: str, filepath: str):
