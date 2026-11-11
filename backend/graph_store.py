@@ -11,8 +11,25 @@ def fix_unicode_escapes(text: str | None) -> str:
     return re.sub(r'\\u\{([0-9A-Fa-f]+)\}', lambda m: chr(int(m.group(1), 16)), text)
 
 
+def sync_book_counts(conn, book_id: str):
+    """Recompute the denormalized books.node_count / edge_count from real rows."""
+    n = conn.execute("SELECT COUNT(*) FROM graph_nodes WHERE book_id = ?", (book_id,)).fetchone()[0]
+    e = conn.execute("SELECT COUNT(*) FROM graph_edges WHERE book_id = ?", (book_id,)).fetchone()[0]
+    conn.execute("UPDATE books SET node_count = ?, edge_count = ? WHERE id = ?", (n, e, book_id))
+
+
+def _resolve_id(node_id: str, id_map: dict[str, str]) -> str:
+    """Follow merge redirects; chains are possible when a batch has several duplicates."""
+    seen = set()
+    while node_id in id_map and node_id not in seen:
+        seen.add(node_id)
+        node_id = id_map[node_id]
+    return node_id
+
+
 def save_nodes_and_edges(nodes: list[dict], edges: list[dict], book_id: str):
     conn = get_db()
+    id_map: dict[str, str] = {}
     for node in nodes:
         # Deduplicate: if node with same name+entity_type exists for this book,
         # merge content instead of creating duplicate
@@ -30,7 +47,9 @@ def save_nodes_and_edges(nodes: list[dict], edges: list[dict], book_id: str):
                 "UPDATE graph_nodes SET content = ? WHERE id = ?",
                 (merged_content, existing["id"])
             )
-            # Skip inserting this duplicate node
+            # Remember the redirect so edges referencing node["id"] still land
+            # on a real node instead of becoming dangling rows.
+            id_map[node["id"]] = _resolve_id(existing["id"], id_map)
             continue
 
         conn.execute(
@@ -39,20 +58,29 @@ def save_nodes_and_edges(nodes: list[dict], edges: list[dict], book_id: str):
             (node["id"], node["book_id"], node["entity_type"], node["name"],
              node.get("content", ""), node.get("chapter", ""))
         )
+    # Only ids that actually exist may be used as endpoints.
+    valid_ids = {r[0] for r in conn.execute("SELECT id FROM graph_nodes")}
     for edge in edges:
+        src = _resolve_id(edge["source_id"], id_map)
+        tgt = _resolve_id(edge["target_id"], id_map)
+        if src == tgt or src not in valid_ids or tgt not in valid_ids:
+            # Self-loops and edges to missing nodes are dropped: Cytoscape rejects
+            # them, and previously they persisted as dangling rows in SQLite.
+            continue
+        edge_book = edge.get("book_id", book_id)
         # Deduplicate: skip if same (source, target, relation_type) already exists for this book
         existing = conn.execute(
             "SELECT id FROM graph_edges WHERE source_id = ? AND target_id = ? AND relation_type = ? AND book_id = ?",
-            (edge["source_id"], edge["target_id"], edge["relation_type"], edge.get("book_id", book_id))
+            (src, tgt, edge["relation_type"], edge_book)
         ).fetchone()
         if existing:
             continue
         conn.execute(
             """INSERT INTO graph_edges (source_id, target_id, relation_type, description, book_id)
                VALUES (?, ?, ?, ?, ?)""",
-            (edge["source_id"], edge["target_id"], edge["relation_type"],
-             edge.get("description", ""), edge.get("book_id", book_id))
+            (src, tgt, edge["relation_type"], edge.get("description", ""), edge_book)
         )
+    sync_book_counts(conn, book_id)
     conn.commit()
     conn.close()
 
@@ -90,8 +118,12 @@ def get_graph_for_book(book_id: str) -> dict:
             }
         })
 
+    node_ids = {n["id"] for n in nodes}
     cy_edges = []
     for e in edges:
+        if e["source_id"] not in node_ids or e["target_id"] not in node_ids:
+            # Defensive: Cytoscape throws on edges with missing endpoints.
+            continue
         cy_edges.append({
             "data": {
                 "id": str(e["id"]),
@@ -132,8 +164,11 @@ def update_node(node_id: str, name: str, content: str):
 
 def delete_node(node_id: str):
     conn = get_db()
+    row = conn.execute("SELECT book_id FROM graph_nodes WHERE id = ?", (node_id,)).fetchone()
     conn.execute("DELETE FROM graph_edges WHERE source_id = ? OR target_id = ?", (node_id, node_id))
     conn.execute("DELETE FROM graph_nodes WHERE id = ?", (node_id,))
+    if row:
+        sync_book_counts(conn, row["book_id"])
     conn.commit()
     conn.close()
 

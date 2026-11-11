@@ -28,6 +28,9 @@ scripts/diagnose_output.txt
 # Large local test fixtures: keep on disk, not in git
 tests/*.pdf
 
+# Scratch dirs for one-off verification / repair scripts
+.tmp-*/
+
 # IDE
 .idea/
 .vscode/
