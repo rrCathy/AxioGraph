@@ -47,9 +47,8 @@ def _check_llm():
         if "401" in msg or "403" in msg or "auth" in msg.lower():
             return (False, "Invalid LLM API key — check backend/.env")
         if "connect" in msg.lower() or "timed out" in msg.lower() or "timeout" in msg.lower():
-            return (False, "Cannot reach the configured LLM server — check "
-                           "EXTRACTION_MODEL / base URL in backend/.env and whether "
-                           "the local model service is running")
+            return (False, "Cannot reach FreeLLMAPI - check FREEAPI_BASE_URL in "
+                           "backend/.env and whether the local model service is running")
         return (False, f"{type(e).__name__}: {msg[:180]}")
 
 
