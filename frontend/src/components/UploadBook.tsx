@@ -254,6 +254,8 @@ function StatusBadge({ status }: { status: string }) {
   let label = status
 
   if (isChecking) { colorClass = 'bg-accent-amber/20 text-accent-amber'; label = '检测中' }
+  else if (status === 'ready') { colorClass = 'bg-accent-green/15 text-accent-green'; label = '待逐页分析' }
+  else if (status === 'importing') { colorClass = 'bg-accent-blue/15 text-accent-blue'; label = '导入页面中' }
   else if (status === 'pending') { colorClass = 'bg-accent-amber/15 text-accent-amber'; label = '排队中' }
   else if (status === 'parsing') { colorClass = 'bg-orange-500/20 text-orange-400'; label = '解析中' }
   else if (status === 'extracting') { colorClass = 'bg-accent-purple/20 text-accent-purple'; label = '提取中' }

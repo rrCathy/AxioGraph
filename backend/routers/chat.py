@@ -12,7 +12,7 @@ class ChatRequest(BaseModel):
     book_id: str | None = None
 
 
-QA_SYSTEM_PROMPT = """You are a mathematics tutor with access to a knowledge graph of mathematical concepts.
+QA_SYSTEM_PROMPT = r"""You are a mathematics tutor with access to a knowledge graph of mathematical concepts.
 Answer the user's question based on the provided context of mathematical definitions, theorems, and concepts.
 Cite specific theorems or definitions when relevant.
 If the context is insufficient, say so clearly.

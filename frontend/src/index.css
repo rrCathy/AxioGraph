@@ -2,6 +2,19 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ─── Page text editor (TipTap) ──────────────────────── */
+.page-editor-prose {
+  @apply text-text-secondary;
+  min-height: 100%;
+  font-size: 13px;
+  line-height: 1.75;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: 'Noto Sans SC', 'Microsoft YaHei', 'PingFang SC', ui-monospace, monospace;
+}
+.page-editor-prose p { margin: 0 0 2px; }
+.page-editor-prose p:empty::before { content: ' '; }
+
 /* ─── Base ───────────────────────────────────────────── */
 @layer base {
   body {

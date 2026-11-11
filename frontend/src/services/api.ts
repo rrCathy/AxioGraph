@@ -80,3 +80,85 @@ export async function translateText(text: string, targetLang: string = 'zh') {
   })
   return res.json()
 }
+
+/* ── Page-level workbench ─────────────────────────────────────────── */
+
+export const pageImageUrl = (bookId: string, pageNo: number) =>
+  `${BASE}/books/${bookId}/pages/${pageNo}/render`
+
+export async function importPages(bookId: string) {
+  const res = await fetch(`${BASE}/books/${bookId}/import-pages`, { method: 'POST' })
+  return res.json()
+}
+
+export async function listPages(bookId: string) {
+  const res = await fetch(`${BASE}/books/${bookId}/pages`)
+  return res.json()
+}
+
+export async function getPage(bookId: string, pageNo: number) {
+  const res = await fetch(`${BASE}/books/${bookId}/pages/${pageNo}`)
+  if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`)
+  return res.json()
+}
+
+export async function savePageText(bookId: string, pageNo: number, text: string) {
+  const res = await fetch(`${BASE}/books/${bookId}/pages/${pageNo}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text }),
+  })
+  return res.json()
+}
+
+export async function submitOcr(bookId: string, pageNo: number, text: string, confidence: number) {
+  const res = await fetch(`${BASE}/books/${bookId}/pages/${pageNo}/ocr`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text, confidence }),
+  })
+  return res.json()
+}
+
+export async function extractWindow(bookId: string, start: number, end: number) {
+  const res = await fetch(`${BASE}/books/${bookId}/extract`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ start, end }),
+  })
+  if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`)
+  return res.json()
+}
+
+export async function listCandidates(bookId: string, status = 'pending') {
+  const res = await fetch(`${BASE}/books/${bookId}/candidates?status=${status}`)
+  return res.json()
+}
+
+export async function listConfirmedNodes(bookId: string) {
+  const res = await fetch(`${BASE}/books/${bookId}/confirmed-nodes`)
+  return res.json()
+}
+
+export async function confirmCandidate(id: string, quote?: string) {
+  const res = await fetch(`${BASE}/candidates/${id}/confirm`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ quote: quote || null }),
+  })
+  return res.json()
+}
+
+export async function rejectCandidate(id: string) {
+  const res = await fetch(`${BASE}/candidates/${id}/reject`, { method: 'POST' })
+  return res.json()
+}
+
+export async function mergeCandidate(id: string, nodeId: string) {
+  const res = await fetch(`${BASE}/candidates/${id}/merge`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ node_id: nodeId }),
+  })
+  return res.json()
+}

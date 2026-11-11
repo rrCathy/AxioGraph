@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from database import init_db
-from routers import books, graph, chat
+from routers import books, graph, chat, pages, workbench
 
 app = FastAPI(title="AxioGraph", version="0.1.0")
 
@@ -16,6 +16,8 @@ app.add_middleware(
 app.include_router(books.router)
 app.include_router(graph.router)
 app.include_router(chat.router)
+app.include_router(pages.router)
+app.include_router(workbench.router)
 
 
 @app.on_event("startup")
@@ -72,7 +74,7 @@ async def llm_health():
     """Probe configured LLM endpoints with a hard time bound.
 
     A dead or unreachable model server must not turn a health check into a hang.
-    Both probes run concurrently, each capped at 6 seconds.
+    Both probes run concurrently, each capped at 12 seconds.
     """
     import asyncio
     from services.llm import get_llm
@@ -91,9 +93,9 @@ async def llm_health():
 
     async def bounded(task: str) -> dict:
         try:
-            return await asyncio.wait_for(asyncio.to_thread(probe, task), timeout=6)
+            return await asyncio.wait_for(asyncio.to_thread(probe, task), timeout=12)
         except asyncio.TimeoutError:
-            return {"ok": False, "error": "probe timed out after 6s"}
+            return {"ok": False, "error": "probe timed out after 12s"}
 
     tasks = ["extraction", "chat"]
     results = dict(zip(tasks, await asyncio.gather(*(bounded(t) for t in tasks))))

@@ -25,6 +25,10 @@ data/*.kuzu
 # One-off diagnostic leftover (UTF-16 mojibake, unreadable)
 scripts/diagnose_output.txt
 
+# OCR language data (downloaded on demand by tesseract.js)
+*.traineddata
+*.traineddata.gz
+
 # Large local test fixtures: keep on disk, not in git
 tests/*.pdf
 

@@ -9,6 +9,7 @@ from extractor import extract_from_chapters
 from graph_store import save_nodes_and_edges
 from config import settings
 from pathlib import Path
+import page_service as ps
 
 router = APIRouter(prefix="/api/books", tags=["books"])
 
@@ -187,8 +188,8 @@ def _process_book(book_id: str, filepath: str):
 
 @router.post("/upload")
 async def upload_book(file: UploadFile = File(...)):
-    if not file.filename.endswith(".pdf"):
-        raise HTTPException(400, "Only PDF files are supported in MVP")
+    if not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(400, "Only PDF files are supported")
 
     book_id = str(uuid.uuid4())
     save_dir = settings.data_dir / "books"
@@ -202,15 +203,27 @@ async def upload_book(file: UploadFile = File(...)):
 
     conn = get_db()
     conn.execute(
-        "INSERT INTO books (id, title, filename, status) VALUES (?, ?, ?, 'pending')",
+        "INSERT INTO books (id, title, filename, status) VALUES (?, ?, ?, 'importing')",
         (book_id, title, file.filename)
     )
     conn.commit()
     conn.close()
 
-    threading.Thread(target=_process_book, args=(book_id, str(filepath)), daemon=True).start()
+    # Page-level workflow: import text + bounding boxes only. No LLM call,
+    # no whole-book extraction. The human decides which 1-3 pages to analyze.
+    page_count = 0
+    try:
+        page_count = ps.import_pages(book_id, filepath)
+        status = "ready"
+    except Exception as e:
+        status = f"error: page import failed: {str(e)[:160]}"
 
-    return {"id": book_id, "title": title, "status": "pending"}
+    conn = get_db()
+    conn.execute("UPDATE books SET status = ? WHERE id = ?", (status, book_id))
+    conn.commit()
+    conn.close()
+
+    return {"id": book_id, "title": title, "status": status, "page_count": page_count}
 
 
 @router.get("/")

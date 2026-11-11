@@ -16,7 +16,7 @@ def _make_client(api_key: str, base_url: str, *, async_client: bool = False):
     """
     cls = AsyncOpenAI if async_client else OpenAI
     if _is_local(base_url):
-        timeout = httpx.Timeout(30.0, connect=3.0)
+        timeout = httpx.Timeout(180.0, connect=3.0)
         http_client = (
             httpx.AsyncClient(trust_env=False, timeout=timeout)
             if async_client

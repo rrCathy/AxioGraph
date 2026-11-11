@@ -250,6 +250,15 @@ def _is_valid_node(name: str, content_input) -> bool:
         return False
     if _is_bare_symbol(name):
         return False
+    # Bare numbered labels ("定理1", "Lemma 3") carry no information and are
+    # explicitly forbidden by the extraction prompt, yet models still emit them.
+    if re.match(
+        r"^(定理|引理|命题|定义|例|推论|公理|注记|"
+        r"lemma|theorem|definition|proposition|corollary|example|remark)"
+        r"\s*[\d.．、\-'′’]+$",
+        name_lower,
+    ):
+        return False
     if len(name.strip()) <= 1:
         return False
     return True

@@ -61,10 +61,43 @@ def init_db():
             FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE
         );
 
+        CREATE TABLE IF NOT EXISTS pages (
+            book_id TEXT NOT NULL,
+            page_no INTEGER NOT NULL,
+            text_raw TEXT,
+            text_corrected TEXT,
+            blocks_json TEXT DEFAULT '[]',
+            char_count INTEGER DEFAULT 0,
+            quality REAL DEFAULT 0,
+            status TEXT DEFAULT 'pending',
+            ocr_confidence REAL,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (book_id, page_no),
+            FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS candidates (
+            id TEXT PRIMARY KEY,
+            book_id TEXT NOT NULL,
+            page_start INTEGER NOT NULL,
+            page_end INTEGER NOT NULL,
+            entity_type TEXT NOT NULL,
+            name TEXT NOT NULL,
+            content TEXT,
+            quote TEXT,
+            relations_json TEXT DEFAULT '[]',
+            status TEXT DEFAULT 'pending',
+            merged_into TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE
+        );
+
         CREATE INDEX IF NOT EXISTS idx_nodes_book ON graph_nodes(book_id);
         CREATE INDEX IF NOT EXISTS idx_nodes_type ON graph_nodes(entity_type);
         CREATE INDEX IF NOT EXISTS idx_edges_source ON graph_edges(source_id);
         CREATE INDEX IF NOT EXISTS idx_edges_target ON graph_edges(target_id);
+        CREATE INDEX IF NOT EXISTS idx_pages_book ON pages(book_id);
+        CREATE INDEX IF NOT EXISTS idx_candidates_book ON candidates(book_id, status);
     """)
     # Migrate existing databases
     for col, col_type in [
@@ -78,6 +111,25 @@ def init_db():
             conn.execute(f"ALTER TABLE books ADD COLUMN {col} {col_type}")
         except sqlite3.OperationalError:
             pass
+
+    # Page-level workflow: provenance + human review on existing graph tables.
+    # Old rows default to 'legacy' so they can be filtered out, not deleted.
+    for table, cols in [
+        ("graph_nodes", [
+            ("page_start", "INTEGER"),
+            ("page_end", "INTEGER"),
+            ("review_status", "TEXT DEFAULT 'legacy'"),
+            ("source_quote", "TEXT"),
+            ("created_by", "TEXT DEFAULT 'ai'"),
+            ("merged_into", "TEXT"),
+        ]),
+        ("graph_edges", [("review_status", "TEXT DEFAULT 'legacy'")]),
+    ]:
+        for col, col_type in cols:
+            try:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}")
+            except sqlite3.OperationalError:
+                pass
 
     # Migrate graph_nodes: add updated_at if missing
     try:

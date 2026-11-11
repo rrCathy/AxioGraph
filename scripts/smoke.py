@@ -19,11 +19,18 @@ OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 failures = []
 warnings = []
+BOOKS = []
+PAGE_BOOK = None
 
 
 def get(url, timeout=8):
     with OPENER.open(url, timeout=timeout) as resp:
         return resp.status, resp.read().decode("utf-8", "replace")
+
+
+def get_raw(url, timeout=8):
+    with OPENER.open(url, timeout=timeout) as resp:
+        return resp.status, resp.headers.get("Content-Type", ""), resp.read()
 
 
 def check(label, fn):
@@ -89,12 +96,48 @@ def c_proxy():
     return "/api proxied to backend"
 
 
+def c_pages():
+    global PAGE_BOOK
+    for b in BOOKS:
+        _, body = get(f"{BACKEND}/api/books/{b['id']}/pages")
+        found = json.loads(body).get("pages") or []
+        if found:
+            PAGE_BOOK = b["id"]
+            return f"{len(found)} pages in {b['title']}"
+    return None
+
+
+def c_page_detail():
+    _, body = get(f"{BACKEND}/api/books/{PAGE_BOOK}/pages/1")
+    d = json.loads(body)
+    assert d.get("page_width") and isinstance(d.get("blocks"), list), "missing bbox data"
+    return (f"page 1: {d['char_count']} chars, {len(d['blocks'])} blocks, "
+            f"{d['page_width']:.0f}pt wide")
+
+
+def c_render():
+    code, ctype, data = get_raw(f"{BACKEND}/api/books/{PAGE_BOOK}/pages/1/render")
+    assert code == 200 and "image/png" in ctype and len(data) > 1000, "bad page image"
+    return f"{len(data) // 1024} KB PNG"
+
+
+def c_workbench_api():
+    for path in (f"/api/books/{PAGE_BOOK}/candidates",
+                 f"/api/books/{PAGE_BOOK}/confirmed-nodes"):
+        code, body = get(f"{BACKEND}{path}")
+        assert code == 200 and isinstance(json.loads(body), dict), path
+    return "candidates + confirmed-nodes endpoints OK"
+
+
 def c_llm():
     code, body = get(f"{BACKEND}/api/health/llm", timeout=20)
     llm = json.loads(body)["llm"]
     down = [f"{k}: {v.get('error', 'empty response')}" for k, v in llm.items() if not v.get("ok")]
     if down:
-        warnings.append("LLM unavailable - upload / chat / translate / extraction need the local model server")
+        timed_out = any("timed out" in d for d in down)
+        warnings.append("LLM busy/unreachable - upload / chat / translate / extraction need the local model server"
+                        if not timed_out else
+                        "LLM health probe timed out (model busy) - extraction may still work")
         for d in down:
             print(f"       {d}")
         return None
@@ -114,6 +157,16 @@ if not failures:
     check("frontend /api proxy", c_proxy)
 
     print("-" * 62)
+    pages_detail = c_pages()
+    if pages_detail:
+        print(f"[PASS] page index - {pages_detail}")
+        check("page text + bboxes", c_page_detail)
+        check("original page render", c_render)
+        check("workbench read APIs", c_workbench_api)
+    else:
+        warnings.append("no book has imported pages yet - use Re-import pages in the workbench")
+        print("[WARN] page index - no imported pages yet")
+
     try:
         detail = c_llm()
         if detail:

@@ -4,15 +4,16 @@ import UploadBook from './components/UploadBook'
 import GraphView from './components/GraphView'
 import NodeDetail from './components/NodeDetail'
 import ChatPanel from './components/ChatPanel'
+import Workbench from './components/Workbench'
 import { useAppStore } from './stores/appStore'
 import { useI18n } from './i18n/useI18n'
 
-type Tab = 'books' | 'graph' | 'chat'
+type Tab = 'workbench' | 'books' | 'graph' | 'chat'
 
 export default function App() {
   const { selectedNodeId, selectedBookId, books } = useAppStore()
   const { t, lang, setLang } = useI18n()
-  const [tab, setTab] = useState<Tab>('books')
+  const [tab, setTab] = useState<Tab>('workbench')
 
   const selectedBook = books.find((b) => b.id === selectedBookId)
 
@@ -34,6 +35,9 @@ export default function App() {
 
           {/* Tabs */}
           <nav className="flex items-center gap-0.5">
+            <TabBtn active={tab === 'workbench'} onClick={() => setTab('workbench')} icon="\u{1F4C4}">
+              {t('app.tabWorkbench')}
+            </TabBtn>
             <TabBtn active={tab === 'books'} onClick={() => setTab('books')} icon="\u{1F4DA}">
               {t('app.tabBooks')}
             </TabBtn>
@@ -68,6 +72,12 @@ export default function App() {
 
         {/* ─── Content ─────────────────────────────────── */}
         <div className="flex-1 flex overflow-hidden">
+          {tab === 'workbench' && (
+            <div className="flex-1 min-w-0">
+              <Workbench />
+            </div>
+          )}
+
           {tab === 'books' && (
             <div className="flex-1 overflow-auto">
               <div className="max-w-3xl mx-auto p-6">
