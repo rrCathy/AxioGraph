@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+.env
+
+# Node / build output
+node_modules/
+frontend/dist/
+*.tsbuildinfo
+
+# Local data: databases, uploaded PDFs, vector stores, backups
+*.db
+*.db.*
+data/books/
+data/lightrag/
+data/*.kuzu
+
+# Agent / IDE runtime state (local only, not source)
+.omo/
+.serena/
+.codegraph
+.workbuddy/
+
+# One-off diagnostic leftover (UTF-16 mojibake, unreadable)
+scripts/diagnose_output.txt
+
+# Large local test fixtures: keep on disk, not in git
+tests/*.pdf
+
+# IDE
+.idea/
+.vscode/
+*.swp

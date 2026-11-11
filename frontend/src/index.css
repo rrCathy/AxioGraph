@@ -1,0 +1,98 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ─── Base ───────────────────────────────────────────── */
+@layer base {
+  body {
+    @apply bg-surface-base text-text-primary antialiased;
+    margin: 0;
+    font-family: 'Inter', 'Noto Sans SC', 'Microsoft YaHei', 'SimHei', 'PingFang SC', system-ui, -apple-system, sans-serif;
+    font-size: 14px;
+    line-height: 1.6;
+  }
+
+  #root {
+    height: 100vh;
+    width: 100vw;
+    overflow: hidden;
+  }
+
+  ::selection {
+    background: rgba(91, 141, 239, 0.3);
+    color: #e2e8f0;
+  }
+}
+
+/* ─── Cytoscape ──────────────────────────────────────── */
+.cytoscape-container {
+  width: 100%;
+  height: 100%;
+  background: radial-gradient(ellipse at center, #111622 0%, #0b0e14 100%);
+}
+
+/* ─── Scrollbar ──────────────────────────────────────── */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #2a334c;
+  border-radius: 10px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #3a4562;
+}
+
+/* ─── KaTeX overrides ────────────────────────────────── */
+.katex {
+  font-size: 1.05em !important;
+}
+.katex-display {
+  margin: 0.5em 0 !important;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.katex-display > .katex {
+  font-size: 1.1em !important;
+}
+/* Mute KaTeX error rendering — default #cc0000 is too alarming on dark bg */
+.katex .error,
+.katex-error {
+  color: #f59e0b !important;       /* amber-500, less alarming than red */
+  background: rgba(245, 158, 11, 0.08) !important;
+  border-radius: 2px;
+  padding: 0 1px;
+  font-size: 0.95em;
+}
+
+/* ─── Details / Summary ──────────────────────────────── */
+details summary::marker {
+  color: #5b8def;
+  font-size: 0.8em;
+}
+details[open] summary {
+  margin-bottom: 0.25rem;
+}
+
+/* ─── Transitions ────────────────────────────────────── */
+@layer utilities {
+  .transition-gpu {
+    transition-property: transform, opacity;
+    transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+    transition-duration: 150ms;
+    will-change: transform, opacity;
+  }
+}
+
+/* ─── Search result flash ──────────────────────────── */
+@keyframes search-flash {
+  0%, 100% { border-color: #818cf8; border-width: 3px; }
+  50% { border-color: #fbbf24; border-width: 5px; }
+}
+.cytoscape-container .searched-flash {
+  animation: search-flash 0.5s ease-in-out 3;
+}
