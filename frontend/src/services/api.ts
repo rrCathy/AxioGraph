@@ -120,11 +120,12 @@ export async function submitOcr(bookId: string, pageNo: number, text: string, co
   return res.json()
 }
 
-export async function extractWindow(bookId: string, start: number, end: number) {
+export async function extractWindow(bookId: string, start: number, end: number, signal?: AbortSignal) {
   const res = await fetch(`${BASE}/books/${bookId}/extract`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ start, end }),
+    signal,
   })
   if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`)
   return res.json()
@@ -132,11 +133,6 @@ export async function extractWindow(bookId: string, start: number, end: number) 
 
 export async function listCandidates(bookId: string, status = 'pending') {
   const res = await fetch(`${BASE}/books/${bookId}/candidates?status=${status}`)
-  return res.json()
-}
-
-export async function listConfirmedNodes(bookId: string) {
-  const res = await fetch(`${BASE}/books/${bookId}/confirmed-nodes`)
   return res.json()
 }
 
@@ -160,5 +156,38 @@ export async function mergeCandidate(id: string, nodeId: string) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ node_id: nodeId }),
   })
+  return res.json()
+}
+
+/* ── Review-loop capabilities (backend lands these in stage D) ── */
+
+export async function previewCandidate(id: string) {
+  const res = await fetch(`${BASE}/candidates/${id}/preview`)
+  if (!res.ok) return null
+  return res.json()
+}
+
+export async function undoAction(token: string) {
+  const res = await fetch(`${BASE}/actions/${token}/undo`, { method: 'POST' })
+  return res.ok
+}
+
+export async function cancelTask(taskId: string) {
+  const res = await fetch(`${BASE}/tasks/${taskId}/cancel`, { method: 'POST' })
+  return res.ok
+}
+
+export async function deleteBook(bookId: string) {
+  const res = await fetch(`${BASE}/books/${bookId}`, { method: 'DELETE' })
+  return res.json()
+}
+
+export async function clearConfirmedNodes(bookId: string) {
+  const res = await fetch(`${BASE}/books/${bookId}/confirmed-nodes`, { method: 'DELETE' })
+  return res.json()
+}
+
+export async function listConfirmedNodes(bookId: string, q = '') {
+  const res = await fetch(`${BASE}/books/${bookId}/confirmed-nodes?q=${encodeURIComponent(q)}`)
   return res.json()
 }

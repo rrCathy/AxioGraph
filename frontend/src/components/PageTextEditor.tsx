@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { EditorContent, useEditor } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
+import Button from './ui/Button'
 
 const escapeHtml = (s: string) =>
   s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -12,22 +13,23 @@ interface Props {
   text: string
   onSave: (text: string) => void
   onQuote: (text: string) => void
+  onDirtyChange?: (dirty: boolean) => void
   saving: boolean
-  labels: {
-    quote: string
-    save: string
-    saved: string
-    selected: (n: number) => string
-    chars: (n: number) => string
-  }
 }
 
-/** Editable transcription of one PDF page. Selectable, quotable, correctable. */
-export default function PageTextEditor({ text, onSave, onQuote, saving, labels }: Props) {
+export default function PageTextEditor({
+  text, onSave, onQuote, onDirtyChange, saving,
+}: Props) {
   const editor = useEditor({
     extensions: [StarterKit],
     content: toHtml(text),
-    editorProps: { attributes: { class: 'page-editor-prose focus:outline-none' } },
+    editorProps: {
+      attributes: {
+        class: 'page-editor-prose focus:outline-none',
+        'aria-label': '本页提取文本，可编辑、可选中引用',
+        spellcheck: 'false',
+      },
+    },
   })
   const [selectedCount, setSelectedCount] = useState(0)
   const [dirty, setDirty] = useState(false)
@@ -38,7 +40,8 @@ export default function PageTextEditor({ text, onSave, onQuote, saving, labels }
     editor.commands.setContent(toHtml(text))
     setDirty(false)
     setJustSaved(false)
-  }, [text, editor])
+    onDirtyChange?.(false)
+  }, [text, editor, onDirtyChange])
 
   useEffect(() => {
     if (!editor) return
@@ -46,14 +49,17 @@ export default function PageTextEditor({ text, onSave, onQuote, saving, labels }
       const { from, to } = editor.state.selection
       setSelectedCount(editor.state.doc.textBetween(from, to, '\n').trim().length)
     }
-    const onChange = () => setDirty(true)
+    const onChange = () => {
+      setDirty(true)
+      onDirtyChange?.(true)
+    }
     editor.on('selectionUpdate', onSelection)
     editor.on('update', onChange)
     return () => {
       editor.off('selectionUpdate', onSelection)
       editor.off('update', onChange)
     }
-  }, [editor])
+  }, [editor, onDirtyChange])
 
   const quoteSelection = () => {
     if (!editor) return
@@ -66,32 +72,27 @@ export default function PageTextEditor({ text, onSave, onQuote, saving, labels }
     if (!editor) return
     onSave(editor.getText())
     setDirty(false)
+    onDirtyChange?.(false)
     setJustSaved(true)
   }
 
   return (
     <div className="flex flex-col h-full min-h-0">
-      <div className="shrink-0 flex items-center gap-2 px-3 py-2 border-b border-border-subtle bg-surface-raised">
-        <span className="text-2xs text-text-muted flex-1">
-          {selectedCount > 0 ? labels.selected(selectedCount) : labels.chars(text.length)}
+      <div className="shrink-0 flex items-center gap-2 px-3 py-2 border-b border-ag-line1 bg-ag-bg1">
+        <span className="text-caption text-ag-ink3 flex-1 ag-mono">
+          {selectedCount > 0 ? `已选 ${selectedCount} 字` : `${text.length} 字符`}
         </span>
-        <button
-          onClick={quoteSelection}
-          disabled={selectedCount === 0}
-          className="px-2.5 py-1 text-xs rounded-md border border-border-subtle text-text-secondary hover:text-text-primary hover:bg-surface-hover disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-        >
-          {labels.quote}
-        </button>
-        <button
-          onClick={save}
-          disabled={saving || (!dirty && !justSaved)}
-          className="px-2.5 py-1 text-xs rounded-md bg-accent-blue text-white hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-        >
-          {saving ? '...' : justSaved && !dirty ? labels.saved : labels.save}
-        </button>
+        <Button size="sm" onClick={quoteSelection} disabled={selectedCount === 0}>
+          引用选中
+        </Button>
+        <Button size="sm" variant="primary" onClick={save} loading={saving} disabled={!dirty && !justSaved}>
+          {justSaved && !dirty ? '已保存' : '保存文本'}
+        </Button>
       </div>
-      <div className="flex-1 overflow-auto px-4 py-3 bg-surface-overlay">
-        <EditorContent editor={editor} />
+      <div className="flex-1 overflow-auto ag-right-pane bg-ag-bg2" style={{ padding: '24px 28px' }}>
+        <div style={{ maxWidth: 'var(--ag-measure)' }}>
+          <EditorContent editor={editor} />
+        </div>
       </div>
     </div>
   )

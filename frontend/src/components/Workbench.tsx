@@ -1,17 +1,26 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useAppStore } from '../stores/appStore'
 import { useI18n } from '../i18n/useI18n'
 import * as api from '../services/api'
 import type { Candidate, ConfirmedNode, PageDetail, PageInfo } from '../types'
+import Button from './ui/Button'
+import EmptyState from './ui/EmptyState'
+import ConfirmDialog from './ui/ConfirmDialog'
+import { EntityBadge, StatusBadge } from './ui/Badge'
 import PageTextEditor from './PageTextEditor'
+import { useLongTask } from '../hooks/useLongTask'
+import {
+  QuoteStrip, PageSheet, LongTaskStatus, UndoToast,
+  MergePreview, RelationNote, ConfirmedSummary,
+} from './workbench/WorkbenchPanels'
 
-type RightTab = 'text' | 'candidates' | 'nodes'
+type RightTab = 'text' | 'candidates'
 
-const btn = 'px-2.5 py-1 text-xs rounded-md border border-border-subtle text-text-secondary hover:text-text-primary hover:bg-surface-hover disabled:opacity-40 disabled:cursor-not-allowed transition-colors'
-const primary = 'px-3 py-1 text-xs rounded-md bg-accent-blue text-white hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors'
+interface UndoState { label: string; run: () => void }
 
 export default function Workbench() {
-  const { books, selectedBookId, selectBook } = useAppStore()
+  const { books, selectedBookId, selectBook, setStatus, setAlert,
+          confirmedSummaryOpen, setConfirmedSummaryOpen } = useAppStore()
   const { t } = useI18n()
   const bookId = selectedBookId
 
@@ -22,13 +31,32 @@ export default function Workbench() {
   const [candidates, setCandidates] = useState<Candidate[]>([])
   const [nodes, setNodes] = useState<ConfirmedNode[]>([])
   const [tab, setTab] = useState<RightTab>('text')
-  const [busy, setBusy] = useState<string | null>(null)
   const [msg, setMsg] = useState('')
   const [quoteDraft, setQuoteDraft] = useState('')
+  const [dirty, setDirty] = useState(false)
   const [mergeFor, setMergeFor] = useState<string | null>(null)
+  const [dropped, setDropped] = useState(0)
+  const [undo, setUndo] = useState<UndoState | null>(null)
+  const [pendingPage, setPendingPage] = useState<number | null>(null)
+  const [confirmReimport, setConfirmReimport] = useState(false)
+  const [mergeTarget, setMergeTarget] = useState<{ candidateId: string; nodeId: string } | null>(null)
+  const [narrow, setNarrow] = useState(() => window.innerWidth < 1024)
+  const [narrowView, setNarrowView] = useState<'page' | 'text'>('text')
+
+  const { state: task, start, setPhase, stop, elapsedLabel } = useLongTask(75)
+  const abortRef = useRef<AbortController | null>(null)
+  const hardTimer = useRef<number | null>(null)
+  const ocrWorkerRef = useRef<{ terminate: () => Promise<unknown> } | null>(null)
+  const editorFocusRef = useRef<HTMLDivElement>(null)
 
   const total = pages.length
   const endPage = Math.min(pageNo + windowSize - 1, total || pageNo)
+
+  useEffect(() => {
+    const onResize = () => setNarrow(window.innerWidth < 1024)
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
 
   const loadPages = useCallback(async () => {
     if (!bookId) { setPages([]); return }
@@ -58,52 +86,103 @@ export default function Workbench() {
   useEffect(() => { loadPage() }, [loadPage])
   useEffect(() => { loadCandidates(); loadNodes() }, [bookId, loadCandidates, loadNodes])
 
-  const highlight = useMemo(() => {
-    if (!page?.blocks?.length || !quoteDraft || !page.page_width || !page.page_height) return null
-    const key = quoteDraft.slice(0, 12)
-    return page.blocks.find((b) => b.text.includes(key)) || null
-  }, [page, quoteDraft])
+  useEffect(() => {
+    if (!task.active || task.elapsedSec === 0 || task.elapsedSec % 10 !== 0) return
+    setStatus(`${task.phase} · ${elapsedLabel}`)
+  }, [task.active, task.elapsedSec, task.phase, elapsedLabel, setStatus])
+
+  useEffect(() => {
+    if (!undo) return
+    const timer = window.setTimeout(() => setUndo(null), 8000)
+    return () => window.clearTimeout(timer)
+  }, [undo])
+
+  const cancelRunningTask = useCallback(() => {
+    abortRef.current?.abort()
+    ocrWorkerRef.current?.terminate()
+    ocrWorkerRef.current = null
+    if (hardTimer.current !== null) window.clearTimeout(hardTimer.current)
+    stop()
+    setMsg(t('workbench.cancelled'))
+    setStatus(t('workbench.cancelled'))
+  }, [stop, setStatus, t])
+
+  const analyze = async () => {
+    if (!bookId || !total || task.active) return
+    const controller = new AbortController()
+    abortRef.current = controller
+    start('extract', `${t('workbench.analyzing')} p${pageNo}–p${endPage}`)
+    hardTimer.current = window.setTimeout(() => controller.abort(), 120000)
+    try {
+      const r = await api.extractWindow(bookId, pageNo, endPage, controller.signal)
+      await loadCandidates()
+      setTab('candidates')
+      setDropped(r.relations_dropped ?? 0)
+      setMsg(`${r.candidates?.length ?? 0} 个候选 · p${pageNo}–p${endPage}`)
+      setStatus(`${r.candidates?.length ?? 0} 个候选`)
+    } catch (e) {
+      const err = e as Error
+      if (err.name === 'AbortError') {
+        setMsg(t('workbench.cancelled'))
+        setStatus(t('workbench.cancelled'))
+      } else {
+        setAlert(err.message)
+        setMsg(err.message)
+      }
+    } finally {
+      if (hardTimer.current !== null) window.clearTimeout(hardTimer.current)
+      abortRef.current = null
+      stop()
+    }
+  }
+
+  const runOcr = async () => {
+    if (!bookId || task.active) return
+    start('ocr-download', '首次需联网下载中文语言包（仅需一次）')
+    try {
+      const { createWorker } = await import('tesseract.js')
+      const worker = await createWorker('chi_sim+eng')
+      ocrWorkerRef.current = worker
+      setPhase('识别中')
+      const url = `${window.location.origin}${api.pageImageUrl(bookId, pageNo)}`
+      const { data } = await worker.recognize(url)
+      await worker.terminate()
+      ocrWorkerRef.current = null
+      const r = await api.submitOcr(bookId, pageNo, data.text || '', data.confidence || 0)
+      setMsg(r.needs_manual ? t('workbench.ocrFailed') : t('workbench.ocrDone'))
+      setStatus(r.needs_manual ? t('workbench.ocrFailed') : t('workbench.ocrDone'))
+      await loadPage(); await loadPages()
+      setTab('text')
+      setNarrowView('text')
+    } catch (e) {
+      setAlert(`OCR: ${String(e).slice(0, 100)}`)
+      setMsg(`OCR: ${String(e).slice(0, 100)}`)
+    } finally {
+      if (ocrWorkerRef.current) { await ocrWorkerRef.current.terminate(); ocrWorkerRef.current = null }
+      stop()
+    }
+  }
+
+  const skipOcr = () => {
+    setTab('text')
+    setNarrowView('text')
+    setMsg(t('workbench.manualInput'))
+    const prose = editorFocusRef.current?.querySelector('.ProseMirror') as HTMLElement | null
+    prose?.focus()
+  }
 
   const reimport = async () => {
     if (!bookId) return
-    setBusy('import'); setMsg(t('workbench.importing'))
+    setConfirmReimport(false)
+    start('import', t('workbench.importing'))
     try {
       const r = await api.importPages(bookId)
       await loadPages()
       setPageNo(1)
       setPage(await api.getPage(bookId, 1))
       setMsg(t('workbench.pagesImported').replace('{n}', String(r.page_count)))
-    } catch (e) { setMsg(String(e)) }
-    finally { setBusy(null) }
-  }
-
-  const analyze = async () => {
-    if (!bookId || busy) return
-    setBusy('extract'); setMsg(t('workbench.analyzing'))
-    try {
-      const r = await api.extractWindow(bookId, pageNo, endPage)
-      await loadCandidates()
-      setTab('candidates')
-      setMsg(`${r.candidates?.length ?? 0} / ${r.raw_count ?? 0} candidates (p${pageNo}-p${endPage})`)
-    } catch (e) { setMsg(String(e)) }
-    finally { setBusy(null) }
-  }
-
-  const runOcr = async () => {
-    if (!bookId || busy) return
-    setBusy('ocr'); setMsg(t('workbench.ocrRunning'))
-    try {
-      const { createWorker } = await import('tesseract.js')
-      const worker = await createWorker('chi_sim+eng')
-      const url = `${window.location.origin}${api.pageImageUrl(bookId, pageNo)}`
-      const { data } = await worker.recognize(url)
-      await worker.terminate()
-      const r = await api.submitOcr(bookId, pageNo, data.text || '', data.confidence || 0)
-      setMsg(r.needs_manual ? t('workbench.ocrFailed') : t('workbench.ocrDone'))
-      await loadPage(); await loadPages()
-      setTab('text')
-    } catch (e) { setMsg(`OCR: ${String(e).slice(0, 100)}`) }
-    finally { setBusy(null) }
+    } catch (e) { setAlert(String(e)) }
+    finally { stop() }
   }
 
   const saveText = async (text: string) => {
@@ -111,196 +190,282 @@ export default function Workbench() {
     await api.savePageText(bookId, pageNo, text)
     await loadPage(); await loadPages()
     setMsg(t('workbench.saved'))
+    setStatus(t('workbench.saved'))
+  }
+
+  const pushUndo = (label: string, token: string | undefined, refresh: () => Promise<void>) => {
+    setUndo({
+      label,
+      run: async () => {
+        if (!token) { setAlert(t('workbench.undoFailed')); return }
+        const ok = await api.undoAction(token).catch(() => false)
+        if (!ok) { setAlert(t('workbench.undoFailed')); return }
+        await refresh()
+        setUndo(null)
+      },
+    })
   }
 
   const confirm = async (c: Candidate) => {
-    const r = await api.confirmCandidate(c.id, quoteDraft || undefined)
+    const preview = await api.previewCandidate(c.id).catch(() => null)
+    const res = await api.confirmCandidate(c.id, quoteDraft || undefined)
     setQuoteDraft('')
     await loadCandidates(); await loadNodes()
-    setMsg(`${r.action || 'confirmed'}${r.edges_added ? ` · ${r.edges_added} edges` : ''}`)
+    setMsg(`${res.action === 'merged' ? '已合并' : '已确认'} · ${res.node_id?.slice(0, 8) ?? ''}`)
+    setStatus(`${res.action === 'merged' ? '已合并' : '已确认'}「${c.name}」`)
+    const count = res.relations_dropped ?? preview?.relations_dropped?.length ?? 0
+    setDropped(count)
+    pushUndo(`已确认「${c.name}」`, res.undo_token, async () => { await loadCandidates(); await loadNodes() })
   }
 
-  const reject = async (id: string) => {
-    await api.rejectCandidate(id)
-    await loadCandidates()
+  const reject = async (c: Candidate) => {
+    setCandidates((prev) => prev.filter((x) => x.id !== c.id))
+    const res = await api.rejectCandidate(c.id)
+    setStatus(`已驳回「${c.name}」`)
+    pushUndo(`已驳回「${c.name}」`, res.undo_token, loadCandidates)
   }
 
-  const merge = async (candidateId: string, nodeId: string) => {
-    if (!nodeId) return
-    await api.mergeCandidate(candidateId, nodeId)
+  const doMerge = async () => {
+    if (!mergeTarget) return
+    await api.mergeCandidate(mergeTarget.candidateId, mergeTarget.nodeId)
+    setMergeTarget(null)
     setMergeFor(null)
     await loadCandidates(); await loadNodes()
-    setMsg('merged')
+    setStatus('已合并到既有节点')
   }
 
-  const statusLabel = (s: string) => t(`workbench.st.${s}`)
+  const goPage = (n: number) => {
+    if (n < 1 || n > total) return
+    if (dirty) { setPendingPage(n); return }
+    setPageNo(n)
+  }
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null
+      const editable = target?.closest('.ProseMirror, input, textarea, select, [contenteditable="true"]')
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); void analyze(); return }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && undo) { e.preventDefault(); void undo.run(); return }
+      if (editable) return
+      if (e.key === 'ArrowLeft') goPage(pageNo - 1)
+      else if (e.key === 'ArrowRight') goPage(pageNo + 1)
+      else if (e.key === 'Escape') {
+        if (undo) setUndo(null)
+        else if (quoteDraft) setQuoteDraft('')
+        else if (task.active) cancelRunningTask()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  })
+
+  const sameNameNode = (c: Candidate) =>
+    nodes.find((n) => n.name === c.name && n.entity_type === c.entity_type)
+
+  const candidatePanel = (
+    <div className="flex-1 overflow-auto p-3">
+      {dropped > 0 && <div className="mb-2"><RelationNote dropped={dropped} /></div>}
+      {candidates.length === 0 ? (
+        <EmptyState>{t('workbench.noCandidates')}</EmptyState>
+      ) : (
+        <div className="flex flex-col gap-cardgap">
+          {candidates.map((c) => {
+            const twin = sameNameNode(c)
+            return (
+              <div key={c.id} className="rounded-card border border-ag-line1 bg-ag-bg3 p-card">
+                <div className="flex items-center gap-2">
+                  <EntityBadge type={c.entity_type} />
+                  <span className="text-h3 font-medium text-ag-ink1 flex-1 truncate">{c.name}</span>
+                  <span className="ag-mono text-micro text-ag-ink3">p{c.page_start}-{c.page_end}</span>
+                </div>
+                {c.quote && (
+                  <p className="ag-quote mt-2 text-caption text-ag-ink3 line-clamp-3">“{c.quote}”</p>
+                )}
+                <details className="mt-2">
+                  <summary className="text-caption text-ag-ink3 cursor-pointer">content</summary>
+                  <pre className="mt-1 text-micro whitespace-pre-wrap break-words bg-ag-bg2 p-2 rounded-btn max-h-40 overflow-auto">{c.content}</pre>
+                </details>
+                {c.relations?.length > 0 && (
+                  <div className="mt-2 text-micro text-ag-ink3 truncate">
+                    {c.relations.map((r) => `${r.type} → ${r.target}`).join(' · ')}
+                  </div>
+                )}
+                {twin && (
+                  <div className="mt-2">
+                    <MergePreview targetName={twin.name} pageEnd={c.page_end} />
+                  </div>
+                )}
+                <div className="mt-3 flex gap-2 flex-wrap">
+                  <Button size="sm" variant="primary" onClick={() => void confirm(c)}>{t('workbench.confirm')}</Button>
+                  <Button size="sm" onClick={() => void reject(c)}>{t('workbench.reject')}</Button>
+                  <Button size="sm" variant="ghost" onClick={() => setMergeFor(mergeFor === c.id ? null : c.id)}>
+                    {t('workbench.merge')}
+                  </Button>
+                  {c.status === 'pending' && page?.status === 'bad_page' && (
+                    <Button size="sm" variant="ghost" onClick={skipOcr}>{t('workbench.skipOcr')}</Button>
+                  )}
+                </div>
+                {mergeFor === c.id && (
+                  <select
+                    className="ag-focus-ring mt-2 w-full text-caption bg-ag-bg2 border border-ag-line2 rounded-btn px-2 py-1"
+                    defaultValue=""
+                    onChange={(e) => e.target.value && setMergeTarget({ candidateId: c.id, nodeId: e.target.value })}
+                  >
+                    <option value="" disabled>{t('workbench.merge')}</option>
+                    {nodes.map((n) => <option key={n.id} value={n.id}>{n.name} · p{n.page_start}</option>)}
+                  </select>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
 
   return (
-    <div className="flex flex-col h-full min-h-0">
-      <div className="shrink-0 flex items-center gap-2.5 px-4 h-12 border-b border-border-subtle bg-surface-raised overflow-x-auto">
-        <span className="font-medium text-sm text-text-primary whitespace-nowrap">{t('workbench.title')}</span>
+    <div className="relative flex flex-col h-full min-h-0">
+      <div className="shrink-0 flex items-center gap-2.5 px-4 h-topbar border-b border-ag-line1 bg-ag-bg1 overflow-x-auto">
         <select
           value={bookId ?? ''}
           onChange={(e) => selectBook(e.target.value)}
-          className="text-xs bg-surface-overlay border border-border-subtle rounded-md px-2 py-1 max-w-[190px] truncate"
+          className="ag-focus-ring text-caption bg-ag-bg2 border border-ag-line2 rounded-btn px-2 py-1 max-w-[190px] truncate"
+          aria-label={t('workbench.selectBook')}
         >
           <option value="" disabled>{t('workbench.selectBook')}</option>
           {books.map((b) => <option key={b.id} value={b.id}>{b.title}</option>)}
         </select>
-        <div className="w-px h-5 bg-border-medium shrink-0" />
-        <button className={btn} disabled={!total || pageNo <= 1} onClick={() => setPageNo((n) => n - 1)}>‹</button>
-        <span className="text-xs tabular-nums whitespace-nowrap">{pageNo} / {total || '–'}</span>
-        <button className={btn} disabled={!total || pageNo >= total} onClick={() => setPageNo((n) => n + 1)}>›</button>
-        <span className="text-2xs text-text-muted whitespace-nowrap">{t('workbench.window')}</span>
-        <select value={windowSize} onChange={(e) => setWindowSize(Number(e.target.value))}
-          className="text-xs bg-surface-overlay border border-border-subtle rounded-md px-1.5 py-1">
+        <div className="w-px h-5 bg-ag-line2 shrink-0" />
+        <Button size="sm" onClick={() => goPage(pageNo - 1)} disabled={!total || pageNo <= 1}>‹</Button>
+        <span className="ag-mono text-caption text-ag-ink2 whitespace-nowrap">{pageNo} / {total || '–'}</span>
+        <Button size="sm" onClick={() => goPage(pageNo + 1)} disabled={!total || pageNo >= total}>›</Button>
+        <span className="text-caption text-ag-ink3 whitespace-nowrap">{t('workbench.window')}</span>
+        <select
+          value={windowSize}
+          onChange={(e) => setWindowSize(Number(e.target.value))}
+          className="ag-focus-ring text-caption bg-ag-bg2 border border-ag-line2 rounded-btn px-1.5 py-1"
+          aria-label={t('workbench.window')}
+        >
           {[1, 2, 3].map((n) => <option key={n} value={n}>{n}</option>)}
         </select>
-        <span className="text-2xs text-text-dim whitespace-nowrap">p{pageNo}–p{endPage}</span>
-        <button className={primary} disabled={!bookId || !total || !!busy} onClick={analyze}>
-          {busy === 'extract' ? t('workbench.analyzing') : t('workbench.analyze')}
-        </button>
-        <button className={btn} disabled={!bookId || !total || !!busy} onClick={runOcr}>
-          {busy === 'ocr' ? t('workbench.ocrRunning') : t('workbench.ocr')}
-        </button>
-        <button className={btn} disabled={!bookId || !!busy} onClick={reimport}>
-          {busy === 'import' ? t('workbench.importing') : t('workbench.reimport')}
-        </button>
-        {msg && <span className="ml-auto text-2xs text-text-muted truncate max-w-[280px]">{msg}</span>}
+        <span className="ag-mono text-micro text-ag-ink3 whitespace-nowrap">p{pageNo}–p{endPage}</span>
+        <Button size="sm" variant="primary" disabled={!bookId || !total || task.active} onClick={() => void analyze()}>
+          {t('workbench.analyze')}
+        </Button>
+        <Button size="sm" disabled={!bookId || !total || task.active} onClick={() => void runOcr()}>
+          {t('workbench.ocr')}
+        </Button>
+        <Button size="sm" variant="ghost" disabled={!bookId || task.active} onClick={() => setConfirmReimport(true)}>
+          {t('workbench.reimport')}
+        </Button>
+        {page && <StatusBadge status={page.status} />}
+        {msg && <span className="ml-auto text-caption text-ag-ink3 truncate max-w-[260px]">{msg}</span>}
       </div>
 
-      <div className="flex-1 flex min-h-0">
-        <div className="w-1/2 flex flex-col border-r border-border-subtle min-h-0">
-          <div className="shrink-0 px-3 py-1.5 text-2xs text-text-muted border-b border-border-subtle flex gap-3">
-            <span>{t('workbench.source')} · p{pageNo}</span>
-            {page && <span>{t('workbench.quality')}: {page.quality}</span>}
-            {page && <span className="px-1.5 rounded bg-surface-overlay">{statusLabel(page.status)}</span>}
-            {page?.ocr_confidence != null && <span>OCR {Math.round(page.ocr_confidence)}%</span>}
-          </div>
-          {page?.status === 'bad_page' && (
-            <div className="shrink-0 px-3 py-2 text-2xs bg-amber-50 border-b border-amber-200 text-amber-900">
-              {t('workbench.badPage')}
-            </div>
-          )}
-          <div className="flex-1 overflow-auto bg-surface-overlay">
-            {bookId && page && (
-              <div className="relative mx-auto" style={{ maxWidth: 780 }}>
-                <img src={api.pageImageUrl(bookId, pageNo)} alt={`page ${pageNo}`} className="w-full block" />
-                {highlight && page.page_width && page.page_height && (
-                  <div className="absolute pointer-events-none border-2 border-amber-500 bg-amber-300/20"
-                    style={{
-                      left: `${(highlight.x0 / page.page_width) * 100}%`,
-                      top: `${(highlight.y0 / page.page_height) * 100}%`,
-                      width: `${((highlight.x1 - highlight.x0) / page.page_width) * 100}%`,
-                      height: `${((highlight.y1 - highlight.y0) / page.page_height) * 100}%`,
-                    }} />
-                )}
-              </div>
-            )}
-            {!bookId && <div className="p-8 text-sm text-text-muted text-center">{t('workbench.noBook')}</div>}
-          </div>
-        </div>
+      {task.active && (
+        <LongTaskStatus state={task} elapsedLabel={elapsedLabel} onCancel={cancelRunningTask} />
+      )}
 
-        <div className="w-1/2 flex flex-col min-h-0">
-          <div className="shrink-0 flex border-b border-border-subtle bg-surface-raised">
-            {([['text', t('workbench.textTab')],
-               ['candidates', `${t('workbench.candidates')} (${candidates.length})`],
-               ['nodes', `${t('workbench.nodes')} (${nodes.length})`]] as [RightTab, string][])
-              .map(([key, label]) => (
-                <button key={key} onClick={() => setTab(key)}
-                  className={`px-4 py-2 text-xs border-b-2 transition-colors ${tab === key
-                    ? 'border-accent-blue text-text-primary font-medium'
-                    : 'border-transparent text-text-muted hover:text-text-primary'}`}>
+      {narrow && (
+        <div className="shrink-0 flex border-b border-ag-line1 bg-ag-bg1">
+          {([['page', t('workbench.showPage')], ['text', t('workbench.showText')]] as const).map(([k, label]) => (
+            <button
+              key={k}
+              onClick={() => setNarrowView(k)}
+              className={`ag-focus-ring flex-1 py-2 text-caption border-b-2 ${narrowView === k ? 'border-ag-cinnabar text-ag-ink1' : 'border-transparent text-ag-ink3'}`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      <div className="flex-1 flex min-h-0">
+        {(!narrow || narrowView === 'page') && (
+          <div className={`${narrow ? 'w-full' : 'w-[46%]'} flex flex-col min-w-0 bg-ag-bg0`}>
+            {bookId && page ? (
+              <PageSheet
+                bookId={bookId}
+                pageNo={pageNo}
+                blocks={page.blocks}
+                quote={quoteDraft}
+                pageWidth={page.page_width}
+                pageHeight={page.page_height}
+                onBlockClick={() => { setTab('text'); setNarrowView('text') }}
+              />
+            ) : (
+              <div className="p-6"><EmptyState>{t('workbench.noBook')}</EmptyState></div>
+            )}
+          </div>
+        )}
+        {!narrow && <div className="ag-gutter" aria-hidden="true" />}
+        {(!narrow || narrowView === 'text') && (
+          <div className={`${narrow ? 'w-full' : 'w-[54%]'} flex flex-col min-w-0 bg-ag-bg2`} ref={editorFocusRef}>
+            <QuoteStrip quote={quoteDraft} onClear={() => setQuoteDraft('')} />
+            <div className="shrink-0 flex border-b border-ag-line1 bg-ag-bg1">
+              {([['text', t('workbench.textTab')], ['candidates', `${t('workbench.candidates')} (${candidates.length})`]] as const).map(([k, label]) => (
+                <button
+                  key={k}
+                  onClick={() => setTab(k)}
+                  className={`ag-focus-ring px-4 py-2 text-caption border-b-2 ${tab === k ? 'border-ag-cinnabar text-ag-ink1 font-medium' : 'border-transparent text-ag-ink3 hover:text-ag-ink1'}`}
+                >
                   {label}
                 </button>
               ))}
-          </div>
-
-          {tab === 'text' && page && (
-            <PageTextEditor
-              text={page.text}
-              onSave={saveText}
-              onQuote={setQuoteDraft}
-              saving={busy === 'save'}
-              labels={{
-                quote: t('workbench.quote'),
-                save: t('workbench.save'),
-                saved: t('workbench.saved'),
-                selected: (n) => `${t('workbench.selected')} ${n}`,
-                chars: (n) => `${n} ${t('workbench.chars')}`,
-              }}
+            </div>
+            {tab === 'text' ? (
+              page ? (
+                <div className="flex-1 min-h-0">
+                  <PageTextEditor
+                    text={page.text}
+                    onSave={(text) => void saveText(text)}
+                    onQuote={setQuoteDraft}
+                    onDirtyChange={setDirty}
+                    saving={false}
+                  />
+                </div>
+              ) : (
+                <div className="p-6"><EmptyState>{t('workbench.noPageText')}</EmptyState></div>
+              )
+            ) : candidatePanel}
+            <ConfirmedSummary
+              nodes={nodes}
+              open={confirmedSummaryOpen}
+              onToggle={() => setConfirmedSummaryOpen(!confirmedSummaryOpen)}
             />
-          )}
-          {tab === 'text' && !page && <div className="p-6 text-sm text-text-muted">{t('workbench.noBook')}</div>}
-
-          {tab === 'candidates' && (
-            <div className="flex-1 overflow-auto">
-              {candidates.length === 0 && (
-                <div className="p-6 text-sm text-text-muted text-center">{t('workbench.noCandidates')}</div>
-              )}
-              {candidates.map((c) => (
-                <div key={c.id} className="p-3 border-b border-border-subtle">
-                  <div className="flex items-center gap-2">
-                    <span className="text-2xs px-1.5 py-0.5 rounded bg-surface-overlay text-text-muted">{c.entity_type}</span>
-                    <span className="text-sm font-medium text-text-primary flex-1 truncate">{c.name}</span>
-                    <span className="text-2xs text-text-dim">p{c.page_start}-{c.page_end}</span>
-                  </div>
-                  {c.quote && (
-                    <p className="mt-1.5 text-2xs text-text-muted italic border-l-2 border-amber-400 pl-2 line-clamp-3">
-                      “{c.quote}”
-                    </p>
-                  )}
-                  <details className="mt-1.5">
-                    <summary className="text-2xs text-text-dim cursor-pointer">content</summary>
-                    <pre className="mt-1 text-2xs whitespace-pre-wrap break-words bg-surface-overlay p-2 rounded max-h-40 overflow-auto">{c.content}</pre>
-                  </details>
-                  {c.relations?.length > 0 && (
-                    <div className="mt-1.5 text-2xs text-text-dim truncate">
-                      {c.relations.map((r) => `${r.type} → ${r.target}`).join(' · ')}
-                    </div>
-                  )}
-                  <div className="mt-2 flex gap-2 flex-wrap">
-                    <button className={primary} onClick={() => confirm(c)}>{t('workbench.confirm')}</button>
-                    <button className={btn} onClick={() => reject(c.id)}>{t('workbench.reject')}</button>
-                    <button className={btn} onClick={() => setMergeFor(mergeFor === c.id ? null : c.id)}>{t('workbench.merge')}</button>
-                  </div>
-                  {mergeFor === c.id && (
-                    <select
-                      className="mt-2 w-full text-xs bg-surface-overlay border border-border-subtle rounded-md px-2 py-1"
-                      defaultValue=""
-                      onChange={(e) => merge(c.id, e.target.value)}
-                    >
-                      <option value="" disabled>{t('workbench.merge')}</option>
-                      {nodes.map((n) => <option key={n.id} value={n.id}>{n.name} · p{n.page_start}</option>)}
-                    </select>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-
-          {tab === 'nodes' && (
-            <div className="flex-1 overflow-auto">
-              {nodes.length === 0 && <div className="p-6 text-sm text-text-muted text-center">{t('workbench.noNodes')}</div>}
-              {nodes.map((n) => (
-                <div key={n.id} className="px-3 py-2 border-b border-border-subtle flex items-center gap-2">
-                  <span className="text-2xs px-1.5 rounded bg-surface-overlay text-text-muted">{n.entity_type}</span>
-                  <span className="text-xs text-text-primary flex-1 truncate">{n.name}</span>
-                  <span className="text-2xs text-text-dim">p{n.page_start}-{n.page_end}</span>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+          </div>
+        )}
       </div>
 
-      {quoteDraft && (
-        <div className="shrink-0 flex items-center gap-2 px-4 py-2 border-t border-amber-200 bg-amber-50 text-2xs text-amber-900">
-          <span className="font-medium">{t('workbench.quoteDraft')}:</span>
-          <span className="flex-1 truncate">“{quoteDraft.slice(0, 140)}”</span>
-          <button className="underline" onClick={() => setQuoteDraft('')}>{t('workbench.clear')}</button>
-        </div>
-      )}
+      {undo && <UndoToast label={undo.label} onUndo={() => void undo.run()} />}
+
+      <ConfirmDialog
+        open={confirmReimport}
+        title={t('workbench.reimportTitle')}
+        description={t('workbench.reimportDesc')}
+        confirmLabel={t('workbench.reimport')}
+        destructive
+        onConfirm={() => void reimport()}
+        onCancel={() => setConfirmReimport(false)}
+      />
+      <ConfirmDialog
+        open={mergeTarget !== null}
+        title={t('workbench.merge')}
+        description="此操作会改变节点归属与页码范围。"
+        confirmLabel={t('workbench.confirm')}
+        onConfirm={() => void doMerge()}
+        onCancel={() => setMergeTarget(null)}
+      />
+      <ConfirmDialog
+        open={pendingPage !== null}
+        title={t('workbench.dirtyTitle')}
+        description={t('workbench.dirtyDesc')}
+        confirmLabel={t('workbench.discard')}
+        cancelLabel={t('workbench.keep')}
+        destructive
+        onConfirm={() => { setDirty(false); setPageNo(pendingPage!); setPendingPage(null) }}
+        onCancel={() => setPendingPage(null)}
+      />
     </div>
   )
 }
