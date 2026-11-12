@@ -21,11 +21,12 @@ export const ENTITY_META: Record<EntityKey, EntityMeta> = {
   other: { key: 'other', abbr: 'OTH', label: '其他', colorVar: '--ag-ink-3', bgVar: '--ag-bg-3', colorClass: 'text-ag-ink3', bgClass: 'bg-ag-bg3', shape: 'ellipse' },
 }
 
-/** Backend actually returns 9 entity types; fold the extras into the 6 semantic families. */
+/** Backend actually returns 9+ entity types; fold the extras into the 6 semantic families. */
 const TYPE_MAP: Record<string, EntityKey> = {
   DEFINITION: 'def', THEOREM: 'the', LEMMA: 'lem', EXAMPLE: 'ex',
   PROPOSITION: 'pro', COROLLARY: 'cor',
   AXIOM: 'def', PROOF: 'lem', CONCEPT: 'other',
+  CHAPTER: 'other',
 }
 
 export function entityKeyOf(type: string): EntityKey {

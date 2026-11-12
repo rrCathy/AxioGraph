@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useAppStore } from '../stores/appStore'
 import { useI18n } from '../i18n/useI18n'
 import * as api from '../services/api'
-import type { Candidate, ConfirmedNode, PageDetail, PageInfo } from '../types'
+import type { AutoStatus, Candidate, ConfirmedNode, PageDetail, PageInfo, TocItem } from '../types'
 import Button from './ui/Button'
 import EmptyState from './ui/EmptyState'
 import ConfirmDialog from './ui/ConfirmDialog'
@@ -10,9 +10,10 @@ import { EntityBadge, StatusBadge } from './ui/Badge'
 import PageTextEditor from './PageTextEditor'
 import { useLongTask } from '../hooks/useLongTask'
 import {
-  QuoteStrip, PageSheet, LongTaskStatus, UndoToast,
+  QuoteStrip, PageViewer, LongTaskStatus, UndoToast,
   MergePreview, RelationNote, ConfirmedSummary,
 } from './workbench/WorkbenchPanels'
+import BookStructurePanel from './workbench/BookStructurePanel'
 
 type RightTab = 'text' | 'candidates'
 
@@ -42,6 +43,15 @@ export default function Workbench() {
   const [mergeTarget, setMergeTarget] = useState<{ candidateId: string; nodeId: string } | null>(null)
   const [narrow, setNarrow] = useState(() => window.innerWidth < 1024)
   const [narrowView, setNarrowView] = useState<'page' | 'text'>('text')
+
+  // Book structure panel + auto mode
+  const [structureOpen, setStructureOpen] = useState(false)
+  const [autoOpen, setAutoOpen] = useState(false)
+  const [autoStatus, setAutoStatus] = useState<AutoStatus | null>(null)
+  const autoStatusRef = useRef<AutoStatus | null>(null)
+  const [autoRange, setAutoRange] = useState({ start: 1, end: 0 })
+  const [autoWindowSize, setAutoWindowSize] = useState(2)
+  const [autoChapters, setAutoChapters] = useState<TocItem[] | null>(null)
 
   const { state: task, start, setPhase, stop, elapsedLabel } = useLongTask(75)
   const abortRef = useRef<AbortController | null>(null)
@@ -97,6 +107,8 @@ export default function Workbench() {
     const timer = window.setTimeout(() => setUndo(null), 8000)
     return () => window.clearTimeout(timer)
   }, [undo])
+
+  useEffect(() => { autoStatusRef.current = autoStatus }, [autoStatus])
 
   const cancelRunningTask = useCallback(() => {
     if (taskIdRef.current) {
@@ -178,6 +190,124 @@ export default function Workbench() {
     const prose = editorFocusRef.current?.querySelector('.ProseMirror') as HTMLElement | null
     prose?.focus()
   }
+
+  const runVisionOcr = async () => {
+    if (!bookId || !total || task.active) return
+    const controller = new AbortController()
+    abortRef.current = controller
+    const taskId = crypto.randomUUID()
+    taskIdRef.current = taskId
+    start('ocr-recognize', t('workbench.visionOcr'))
+    hardTimer.current = window.setTimeout(() => controller.abort(), 240000)
+    try {
+      const r = await api.visionOcr(bookId, pageNo, taskId, controller.signal)
+      if (r.cancelled) {
+        setMsg(t('workbench.cancelled'))
+        setStatus(t('workbench.cancelled'))
+      } else if (r.ok) {
+        setMsg(r.needs_manual ? t('workbench.visionFailed') : t('workbench.visionDone'))
+        setStatus(r.needs_manual ? t('workbench.visionFailed') : t('workbench.visionDone'))
+        await loadPage()
+        await loadPages()
+        setTab('text')
+        setNarrowView('text')
+      } else {
+        setMsg(t('workbench.visionFailed'))
+        setStatus(t('workbench.visionFailed'))
+      }
+    } catch (e) {
+      const err = e as Error
+      if (err.name === 'AbortError') {
+        setMsg(t('workbench.cancelled'))
+        setStatus(t('workbench.cancelled'))
+      } else {
+        setAlert(`vision OCR: ${err.message.slice(0, 120)}`)
+        setMsg(t('workbench.visionFailed'))
+      }
+    } finally {
+      if (hardTimer.current !== null) window.clearTimeout(hardTimer.current)
+      abortRef.current = null
+      taskIdRef.current = null
+      stop()
+    }
+  }
+
+  const startAuto = async (from: number, to: number) => {
+    if (!bookId || !total || autoStatusRef.current?.status === 'running') return
+    const s = Math.max(1, Math.min(from, total))
+    const e = Math.max(s, Math.min(to, total))
+    setAutoRange({ start: s, end: e })
+    try {
+      const r = await api.startAutoExtract(bookId, s, e, autoWindowSize)
+      setAutoStatus({
+        task_id: r.task_id, book_id: bookId, status: 'running',
+        range: [s, e], window_size: r.window_size ?? autoWindowSize,
+        window_total: r.window_total, window_done: 0,
+        current_window: null, failed_windows: [], next_window: s,
+      })
+      setMsg('')
+      setStatus(`${t('workbench.autoTitle')}: p${s}–p${e}`)
+    } catch (err) {
+      setAlert((err as Error).message.slice(0, 140))
+    }
+  }
+
+  const stopAuto = () => {
+    const cur = autoStatusRef.current
+    if (cur?.task_id) void api.cancelTask(cur.task_id).catch(() => {})
+    setMsg('已请求停止；当前窗口在写入前即停')
+    setStatus('已请求停止')
+  }
+
+  const onChapterSelect = (idxStr: string) => {
+    if (!autoChapters || idxStr === '') return
+    const idx = Number(idxStr)
+    const ch = autoChapters[idx]
+    const next = autoChapters[idx + 1]
+    if (!ch?.pdf_page) return
+    const s = ch.pdf_page
+    const e = next?.pdf_page ? Math.min(next.pdf_page - 1, total || s) : (total || s)
+    setAutoRange({ start: s, end: Math.max(s, e) })
+  }
+
+  // Poll the auto task every 3s while it runs; refresh candidates on finish.
+  useEffect(() => {
+    const taskId = autoStatus?.task_id
+    if (!taskId || autoStatus?.status !== 'running') return
+    const timer = window.setInterval(async () => {
+      const cur = autoStatusRef.current
+      if (!cur || cur.status !== 'running' || !bookId) return
+      const s = await api.getAutoStatus(bookId, taskId).catch(() => null)
+      if (!s) return
+      setAutoStatus(s)
+      if (s.status !== 'running') {
+        await loadCandidates()
+        if (s.status === 'done') {
+          setMsg(`${t('workbench.autoDone')}${s.failed_windows.length ? ` · ${t('workbench.autoFailed').replace('{n}', String(s.failed_windows.length))}` : ''}`)
+          setStatus(t('workbench.autoDone'))
+        } else if (s.status === 'cancelled') {
+          setMsg(t('workbench.autoCancelled'))
+          setStatus(t('workbench.autoCancelled'))
+        } else if (s.status === 'error') {
+          setAlert(s.error || 'auto extract error')
+        }
+      }
+    }, 3000)
+    return () => window.clearInterval(timer)
+  }, [autoStatus?.task_id, autoStatus?.status, bookId, loadCandidates, setStatus, setAlert, t])
+
+  // Opening the auto bar loads chapter ranges (if the structure is confirmed).
+  useEffect(() => {
+    if (!autoOpen || !bookId) return
+    setAutoRange((r) => ({ ...r, start: pageNo, end: total || pageNo }))
+    api.getStructure(bookId)
+      .then((s) => {
+        const chapters = (s?.toc || []).filter((it: TocItem) => it.pdf_page && it.pdf_page > 0)
+        setAutoChapters(chapters.length ? chapters : null)
+      })
+      .catch(() => setAutoChapters(null))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoOpen, bookId])
 
   const reimport = async () => {
     if (!bookId) return
@@ -261,6 +391,7 @@ export default function Workbench() {
         if (undo) setUndo(null)
         else if (quoteDraft) setQuoteDraft('')
         else if (task.active) cancelRunningTask()
+        else if (autoStatusRef.current?.status === 'running') stopAuto()
       }
     }
     window.addEventListener('keydown', onKey)
@@ -360,8 +491,17 @@ export default function Workbench() {
         <Button size="sm" variant="primary" disabled={!bookId || !total || task.active} onClick={() => void analyze()}>
           {t('workbench.analyze')}
         </Button>
+        <Button size="sm" disabled={!bookId || !total || task.active} onClick={() => void runVisionOcr()}>
+          {t('workbench.visionOcr')}
+        </Button>
         <Button size="sm" disabled={!bookId || !total || task.active} onClick={() => void runOcr()}>
           {t('workbench.ocr')}
+        </Button>
+        <Button size="sm" disabled={!bookId || !total} onClick={() => setAutoOpen(!autoOpen)}>
+          {t('workbench.autoTitle')}
+        </Button>
+        <Button size="sm" variant="ghost" disabled={!bookId || task.active} onClick={() => setStructureOpen(true)}>
+          {t('workbench.structure')}
         </Button>
         <Button size="sm" variant="ghost" disabled={!bookId || task.active} onClick={() => setConfirmReimport(true)}>
           {t('workbench.reimport')}
@@ -372,6 +512,92 @@ export default function Workbench() {
 
       {task.active && (
         <LongTaskStatus state={task} elapsedLabel={elapsedLabel} onCancel={cancelRunningTask} />
+      )}
+
+      {autoOpen && (
+        <div className="shrink-0 flex items-center gap-2 px-3 py-1.5 border-b border-ag-line1 bg-ag-bg2 flex-wrap">
+          <span className="text-caption text-ag-ink2">{t('workbench.autoTitle')}</span>
+          {autoChapters && (
+            <select
+              defaultValue=""
+              onChange={(e) => onChapterSelect(e.target.value)}
+              className="ag-focus-ring text-caption bg-ag-bg3 border border-ag-line2 rounded-btn px-2 py-1 max-w-[220px] truncate"
+              aria-label={t('workbench.autoChapter')}
+            >
+              <option value="" disabled>{t('workbench.autoChapter')}</option>
+              {autoChapters.map((c, i) => (
+                <option key={i} value={i}>
+                  {'\u3000'.repeat(Math.max(0, c.level - 1))}{c.title} (p{c.pdf_page})
+                </option>
+              ))}
+            </select>
+          )}
+          <span className="text-caption text-ag-ink3">{t('workbench.autoRangeFrom')}</span>
+          <input
+            type="number" min={1} max={total || undefined} value={autoRange.start}
+            onChange={(e) => setAutoRange((r) => ({ ...r, start: Number(e.target.value) }))}
+            className="ag-focus-ring text-caption ag-mono bg-ag-bg3 border border-ag-line2 rounded-btn px-1.5 py-1 w-16"
+            aria-label={t('workbench.autoRangeFrom')}
+          />
+          <span className="text-caption text-ag-ink3">{t('workbench.autoRangeTo')}</span>
+          <input
+            type="number" min={1} max={total || undefined} value={autoRange.end}
+            onChange={(e) => setAutoRange((r) => ({ ...r, end: Number(e.target.value) }))}
+            className="ag-focus-ring text-caption ag-mono bg-ag-bg3 border border-ag-line2 rounded-btn px-1.5 py-1 w-16"
+            aria-label={t('workbench.autoRangeTo')}
+          />
+          <select
+            value={autoWindowSize}
+            onChange={(e) => setAutoWindowSize(Number(e.target.value))}
+            className="ag-focus-ring text-caption bg-ag-bg3 border border-ag-line2 rounded-btn px-1.5 py-1"
+            aria-label={t('workbench.window')}
+          >
+            {[1, 2, 3].map((n) => <option key={n} value={n}>{n}</option>)}
+          </select>
+          {autoStatus?.status === 'running' ? (
+            <>
+              <span className="text-caption text-ag-ink2 ag-mono" aria-live="polite">
+                {t('workbench.autoProgress')
+                  .replace('{done}', String(Math.min(autoStatus.window_done + 1, autoStatus.window_total)))
+                  .replace('{total}', String(autoStatus.window_total))}
+              </span>
+              {autoStatus.current_window && (
+                <span className="text-caption text-ag-ink3 ag-mono">
+                  {t('workbench.autoCurrent')
+                    .replace('{s}', String(autoStatus.current_window[0]))
+                    .replace('{e}', String(autoStatus.current_window[1]))}
+                </span>
+              )}
+              {autoStatus.failed_windows.length > 0 && (
+                <span className="text-caption text-ag-statusOcr">
+                  {t('workbench.autoFailed').replace('{n}', String(autoStatus.failed_windows.length))}
+                </span>
+              )}
+              <Button size="sm" onClick={stopAuto}>{t('workbench.autoStop')}</Button>
+            </>
+          ) : (
+            <>
+              <Button size="sm" variant="primary" disabled={!bookId || !total} onClick={() => void startAuto(autoRange.start, autoRange.end)}>
+                {t('workbench.autoStart')}
+              </Button>
+              {autoStatus && (autoStatus.status === 'cancelled' || autoStatus.status === 'error') && autoStatus.next_window != null && (
+                <Button size="sm" onClick={() => void startAuto(autoStatus.next_window!, autoStatus.range[1])}>
+                  {t('workbench.autoResume')}
+                </Button>
+              )}
+              {autoStatus && autoStatus.failed_windows.length > 0 && (
+                <span className="text-caption text-ag-statusOcr">
+                  {t('workbench.autoFailed').replace('{n}', String(autoStatus.failed_windows.length))}
+                </span>
+              )}
+              {autoStatus && autoStatus.status === 'done' && (
+                <span className="text-caption text-ag-ink3 ag-mono">
+                  {autoStatus.window_done}/{autoStatus.window_total}
+                </span>
+              )}
+            </>
+          )}
+        </div>
       )}
 
       {narrow && (
@@ -392,7 +618,7 @@ export default function Workbench() {
         {(!narrow || narrowView === 'page') && (
           <div className={`${narrow ? 'w-full' : 'w-[46%]'} flex flex-col min-w-0 bg-ag-bg0`}>
             {bookId && page ? (
-              <PageSheet
+              <PageViewer
                 bookId={bookId}
                 pageNo={pageNo}
                 blocks={page.blocks}
@@ -446,6 +672,16 @@ export default function Workbench() {
       </div>
 
       {undo && <UndoToast label={undo.label} onUndo={() => void undo.run()} />}
+
+      <BookStructurePanel
+        bookId={bookId ?? ''}
+        open={structureOpen && !!bookId}
+        onClose={() => setStructureOpen(false)}
+        onJump={(p) => {
+          setStructureOpen(false)
+          goPage(Math.max(1, Math.min(p, total || p)))
+        }}
+      />
 
       <ConfirmDialog
         open={confirmReimport}

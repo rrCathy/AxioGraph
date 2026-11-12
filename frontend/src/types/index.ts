@@ -113,3 +113,44 @@ export interface ConfirmedNode {
   page_start: number
   page_end: number
 }
+
+/* ── Book structure / vision OCR / auto mode ─────────────────────────── */
+
+export interface TocItem {
+  level: number
+  title: string
+  book_page: number | null
+  pdf_page: number | null
+}
+
+export interface BookStructure {
+  title: string | null
+  author: string | null
+  publisher: string | null
+  offset: number | null
+  offset_confidence?: number
+  source: string | null
+  toc: TocItem[]
+  confirmed?: boolean
+  updated_at?: string
+}
+
+export interface AutoFailWindow {
+  start: number
+  end: number
+  error?: string
+}
+
+export interface AutoStatus {
+  task_id: string
+  book_id: string
+  status: 'running' | 'done' | 'cancelled' | 'error'
+  range: [number, number]
+  window_size: number
+  window_total: number
+  window_done: number
+  current_window: [number, number] | null
+  failed_windows: AutoFailWindow[]
+  next_window: number | null
+  error?: string
+}

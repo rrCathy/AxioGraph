@@ -57,21 +57,6 @@ export async function askQuestion(question: string, bookId?: string) {
   return res.json()
 }
 
-export async function pauseExtraction(bookId: string) {
-  const res = await fetch(`${BASE}/books/${bookId}/pause`, { method: 'POST' })
-  return res.json()
-}
-
-export async function resumeExtraction(bookId: string) {
-  const res = await fetch(`${BASE}/books/${bookId}/resume`, { method: 'POST' })
-  return res.json()
-}
-
-export async function cancelExtraction(bookId: string) {
-  const res = await fetch(`${BASE}/books/${bookId}/cancel`, { method: 'POST' })
-  return res.json()
-}
-
 export async function translateText(text: string, targetLang: string = 'zh') {
   const res = await fetch(`${BASE}/graph/translate`, {
     method: 'POST',
@@ -83,8 +68,8 @@ export async function translateText(text: string, targetLang: string = 'zh') {
 
 /* ── Page-level workbench ─────────────────────────────────────────── */
 
-export const pageImageUrl = (bookId: string, pageNo: number) =>
-  `${BASE}/books/${bookId}/pages/${pageNo}/render`
+export const pageImageUrl = (bookId: string, pageNo: number, zoom?: number) =>
+  `${BASE}/books/${bookId}/pages/${pageNo}/render${zoom != null ? `?zoom=${zoom.toFixed(2)}` : ''}`
 
 export async function importPages(bookId: string) {
   const res = await fetch(`${BASE}/books/${bookId}/import-pages`, { method: 'POST' })
@@ -193,5 +178,79 @@ export async function clearConfirmedNodes(bookId: string) {
 
 export async function listConfirmedNodes(bookId: string, q = '') {
   const res = await fetch(`${BASE}/books/${bookId}/confirmed-nodes?q=${encodeURIComponent(q)}`)
+  return res.json()
+}
+
+/* ── Book structure / vision OCR / auto mode ────────────────────────── */
+
+export async function getStructure(bookId: string) {
+  const res = await fetch(`${BASE}/books/${bookId}/structure`)
+  return res.json()
+}
+
+export async function detectStructure(bookId: string,
+                                      signal?: AbortSignal, taskId?: string) {
+  const res = await fetch(`${BASE}/books/${bookId}/structure/detect`, {
+    method: 'POST',
+    headers: taskId ? { 'X-Task-Id': taskId } : undefined,
+    signal,
+  })
+  if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`)
+  return res.json()
+}
+
+export async function saveStructure(bookId: string, data: unknown) {
+  const res = await fetch(`${BASE}/books/${bookId}/structure`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`)
+  return res.json()
+}
+
+export async function confirmStructure(bookId: string) {
+  const res = await fetch(`${BASE}/books/${bookId}/structure/confirm`, { method: 'POST' })
+  if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`)
+  return res.json()
+}
+
+export async function parseTocPage(bookId: string, pageNo: number) {
+  const res = await fetch(`${BASE}/books/${bookId}/structure/toc-page`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ page_no: pageNo }),
+  })
+  if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`)
+  return res.json()
+}
+
+export async function visionOcr(bookId: string, pageNo: number,
+                                taskId?: string, signal?: AbortSignal) {
+  const res = await fetch(`${BASE}/books/${bookId}/pages/${pageNo}/vision-ocr`, {
+    method: 'POST',
+    headers: taskId ? { 'X-Task-Id': taskId } : undefined,
+    signal,
+  })
+  if (!res.ok && res.status !== 404) {
+    throw new Error(`${res.status}: ${await res.text()}`)
+  }
+  return res.json()
+}
+
+export async function startAutoExtract(bookId: string, start: number,
+                                       end: number, windowSize: number) {
+  const res = await fetch(`${BASE}/books/${bookId}/auto-extract`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ start, end, window_size: windowSize }),
+  })
+  if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`)
+  return res.json()
+}
+
+export async function getAutoStatus(bookId: string, taskId: string) {
+  const res = await fetch(`${BASE}/books/${bookId}/auto-extract/${taskId}`)
+  if (!res.ok) return null
   return res.json()
 }

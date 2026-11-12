@@ -53,6 +53,22 @@ def _norm(text: str) -> str:
     return re.sub(r"\s+", "", (text or "")).lower()
 
 
+_JUNK_TITLE = re.compile(
+    r"\.(dvi|tex|pdf|docx?)$|^unsaved|^untitled|^document$|^unknown$|^\d+$",
+    re.I,
+)
+_NONCHAPTER_TITLE = re.compile(
+    r"^(contents|目录|目次|index|索引|cover|封面|halftitle|titlepage)$"
+)
+
+
+def _clean_meta_title(raw: str | None) -> str | None:
+    title = (raw or "").strip()
+    if not title or _JUNK_TITLE.search(title):
+        return None
+    return title
+
+
 def _parse_json_array(response: str) -> list:
     """Strict JSON array (or {\"items\": [...]}) with json-repair fallback."""
     if not response or not response.strip():
@@ -232,7 +248,7 @@ def detect_structure(book_id: str, task_id: str | None = None) -> dict:
     meta = doc.metadata or {}
 
     result = {
-        "title": (meta.get("title") or "").strip() or None,
+        "title": _clean_meta_title(meta.get("title")),
         "author": (meta.get("author") or "").strip() or None,
         "publisher": None,
         "offset": None,
@@ -377,15 +393,19 @@ def confirm_structure(book_id: str) -> dict:
         (book_id,),
     )
     created = 0
+    skipped = 0
     for idx, it in enumerate(toc):
         pdf_page = int(it["pdf_page"])
+        if not it.get("title") or _NONCHAPTER_TITLE.match(_norm(it["title"])):
+            skipped += 1
+            continue
         nxt = toc[idx + 1]["pdf_page"] if idx + 1 < len(toc) else None
         page_end = max(pdf_page, int(nxt) - 1) if nxt and int(nxt) > pdf_page else pdf_page
         conn.execute(
             """INSERT INTO graph_nodes
                (id, book_id, entity_type, name, content, chapter, metadata,
                 page_start, page_end, review_status, source_quote, created_by)
-               VALUES (?, ?, 'CHAPTER', ?, '', ?, ?, ?, 'confirmed', NULL, 'human')""",
+               VALUES (?, ?, 'CHAPTER', ?, '', ?, ?, ?, ?, 'confirmed', NULL, 'human')""",
             (str(uuid.uuid4()), book_id, it["title"],
              f"p{pdf_page}-{page_end}",
              json.dumps({"source": "toc", "book_page": it.get("book_page"),
@@ -397,4 +417,4 @@ def confirm_structure(book_id: str) -> dict:
     conn.commit()
     conn.close()
     save_structure(book_id, st, confirmed=True)
-    return {"ok": True, "chapters_created": created}
+    return {"ok": True, "chapters_created": created, "skipped_nonchapter": skipped}

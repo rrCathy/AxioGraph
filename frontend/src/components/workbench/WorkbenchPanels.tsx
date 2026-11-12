@@ -1,9 +1,13 @@
+import { useEffect, useMemo, useRef, useState } from 'react'
 import Button from '../ui/Button'
 import EmptyState from '../ui/EmptyState'
 import { EntityBadge } from '../ui/Badge'
 import type { ConfirmedNode, TextBlock } from '../../types'
 import type { LongTaskState } from '../../hooks/useLongTask'
 import { pageImageUrl } from '../../services/api'
+import { useI18n } from '../../i18n/useI18n'
+
+export type ZoomMode = 'fitw' | 'fitp' | 'orig'
 
 export function QuoteStrip({ quote, onClear }: { quote: string; onClear: () => void }) {
   return (
@@ -23,7 +27,10 @@ export function QuoteStrip({ quote, onClear }: { quote: string; onClear: () => v
   )
 }
 
-export function PageSheet({
+const SHEET_CHROME = 30 // page-sheet padding + border, both sides
+
+/** Full-page viewer: scroll + three zoom levels + quote overlay. */
+export function PageViewer({
   bookId, pageNo, blocks, quote, pageWidth, pageHeight, onBlockClick,
 }: {
   bookId: string
@@ -34,34 +41,96 @@ export function PageSheet({
   pageHeight?: number
   onBlockClick: () => void
 }) {
+  const { t } = useI18n()
+  const wellRef = useRef<HTMLDivElement>(null)
+  const [well, setWell] = useState({ w: 0, h: 0 })
+  const [zoomMode, setZoomMode] = useState<ZoomMode>('fitw')
+
+  useEffect(() => {
+    const el = wellRef.current
+    if (!el) return
+    const update = () => setWell({ w: el.clientWidth, h: el.clientHeight })
+    update()
+    const ro = new ResizeObserver(update)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+
+  const zoom = useMemo(() => {
+    if (!pageWidth || pageWidth <= 0 || well.w <= 0) return 1.3
+    const fitw = (well.w - SHEET_CHROME) / pageWidth
+    if (zoomMode === 'fitw') return Math.max(0.5, Math.min(3.0, fitw))
+    if (zoomMode === 'fitp' && pageHeight && pageHeight > 0) {
+      const fitp = Math.min(fitw, (well.h - SHEET_CHROME - 28) / pageHeight)
+      return Math.max(0.5, Math.min(3.0, fitp))
+    }
+    return 1.0
+  }, [zoomMode, well, pageWidth, pageHeight])
+
+  const imgWidth = pageWidth && pageWidth > 0 ? Math.round(pageWidth * zoom) : undefined
   const key = quote.slice(0, 12)
   const hit = quote && pageWidth && pageHeight
     ? blocks.find((b) => b.text.includes(key))
     : null
 
+  const zoomBtn = (mode: ZoomMode, label: string) => (
+    <button
+      key={mode}
+      onClick={() => setZoomMode(mode)}
+      aria-pressed={zoomMode === mode}
+      className={`ag-focus-ring px-2 py-0.5 text-caption rounded-btn border transition-colors ${
+        zoomMode === mode
+          ? 'border-ag-cinnabar text-ag-ink1 bg-ag-quoteBg'
+          : 'border-transparent text-ag-ink3 hover:text-ag-ink1'
+      }`}
+    >
+      {label}
+    </button>
+  )
+
   return (
-    <div className="ag-page-well flex-1 overflow-auto">
-      <div className="shrink-0 text-caption text-ag-ink3 mb-3 ag-mono">
-        原页为图像，划选请在右侧「提取文本」中进行
+    <div className="flex flex-col flex-1 min-h-0">
+      <div className="shrink-0 flex items-center gap-1.5 px-3 py-1.5 border-b border-ag-line1 bg-ag-bg2">
+        <span className="text-caption text-ag-ink3 flex-1 ag-mono" aria-live="polite">
+          {Math.round(zoom * 100)}%
+        </span>
+        {zoomBtn('fitw', t('workbench.zoomFitWidth'))}
+        {zoomBtn('fitp', t('workbench.zoomFitPage'))}
+        {zoomBtn('orig', t('workbench.zoomOrig'))}
       </div>
-      <div className="page-sheet">
-        <div className="relative">
-          <img src={pageImageUrl(bookId, pageNo)} alt={`第 ${pageNo} 页原页`} draggable={false} />
-          {hit && (
-            <button
-              onClick={onBlockClick}
-              aria-label="跳回右侧对应的引用文本"
-              className="ag-quote-block ag-focus-ring"
-              style={{
-                left: `${(hit.x0 / pageWidth!) * 100}%`,
-                top: `${(hit.y0 / pageHeight!) * 100}%`,
-                width: `${((hit.x1 - hit.x0) / pageWidth!) * 100}%`,
-                height: `${((hit.y1 - hit.y0) / pageHeight!) * 100}%`,
-              }}
-            >
-              <span className="ag-quote-tag">[1]</span>
-            </button>
-          )}
+      <div ref={wellRef} className="ag-page-well flex-1 overflow-auto">
+        <div className="shrink-0 text-caption text-ag-ink3 mb-3 ag-mono">
+          原页为图像，划选请在右侧「提取文本」中进行
+        </div>
+        <div
+          className="page-sheet"
+          style={zoomMode === 'fitw'
+            ? undefined
+            : { maxWidth: 'none', width: imgWidth ? imgWidth + SHEET_CHROME : undefined, margin: '0 auto' }}
+        >
+          <div className="relative">
+            <img
+              src={pageImageUrl(bookId, pageNo, zoom)}
+              alt={`第 ${pageNo} 页原页`}
+              draggable={false}
+              style={imgWidth ? { width: imgWidth, height: 'auto' } : undefined}
+            />
+            {hit && (
+              <button
+                onClick={onBlockClick}
+                aria-label="跳回右侧对应的引用文本"
+                className="ag-quote-block ag-focus-ring"
+                style={{
+                  left: `${(hit.x0 / pageWidth!) * 100}%`,
+                  top: `${(hit.y0 / pageHeight!) * 100}%`,
+                  width: `${((hit.x1 - hit.x0) / pageWidth!) * 100}%`,
+                  height: `${((hit.y1 - hit.y0) / pageHeight!) * 100}%`,
+                }}
+              >
+                <span className="ag-quote-tag">[1]</span>
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </div>
