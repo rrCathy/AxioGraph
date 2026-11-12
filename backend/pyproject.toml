@@ -12,8 +12,6 @@ dependencies = [
     "pydantic>=2.10.0",
     "pydantic-settings>=2.6.0",
     "aiofiles>=24.1.0",
-    "lightrag-hku>=1.4.0",
-    "numpy>=1.26.0",
     "json-repair>=0.30.0",
 ]
 

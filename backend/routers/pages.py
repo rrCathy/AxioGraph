@@ -1,9 +1,11 @@
 """Page-level workbench API: original page, editable text, OCR hand-off."""
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, Header, HTTPException, Response
 from pydantic import BaseModel
 
 from database import get_db
 import page_service as ps
+import page_extractor as pe
+import vision as vo
 
 router = APIRouter(prefix="/api/books", tags=["pages"])
 
@@ -83,6 +85,29 @@ def accept_ocr(book_id: str, page_no: int, body: OcrResult):
     if not ps.save_page_text(book_id, page_no, text, status, body.confidence or None):
         raise HTTPException(404, "Page not found")
     return {"ok": True, "status": status, "needs_manual": not usable}
+
+
+@router.post("/{book_id}/pages/{page_no}/vision-ocr")
+def vision_ocr(book_id: str, page_no: int,
+               x_task_id: str | None = Header(default=None)):
+    """Server-side vision-model transcription for scanned pages.
+
+    X-Task-Id enables cooperative cancellation while the model is busy; a
+    failed/empty transcription leaves the page untouched (manual entry path).
+    """
+    task_id = x_task_id or None
+    if task_id:
+        pe.register_task(task_id)
+    try:
+        result = vo.ocr_page(book_id, page_no, task_id)
+    except Exception:
+        pe.clear_task(task_id)
+        raise
+    if not result.get("ok") and not result.get("cancelled") \
+            and result.get("error") == "page not found":
+        pe.clear_task(task_id)
+        raise HTTPException(404, "Page not found or PDF missing")
+    return result
 
 
 @router.get("/{book_id}/pages/{page_no}/render")

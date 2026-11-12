@@ -107,6 +107,14 @@ def init_db():
             undone INTEGER DEFAULT 0
         );
 
+        CREATE TABLE IF NOT EXISTS book_structure (
+            book_id TEXT PRIMARY KEY,
+            data_json TEXT NOT NULL,
+            confirmed INTEGER DEFAULT 0,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE
+        );
+
         CREATE INDEX IF NOT EXISTS idx_pages_book ON pages(book_id);
         CREATE INDEX IF NOT EXISTS idx_candidates_book ON candidates(book_id, status);
     """)

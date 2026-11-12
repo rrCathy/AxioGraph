@@ -61,20 +61,7 @@ async def ask_question(req: ChatRequest):
             "answer": "Please select a book first.",
             "references": [],
         }
-
-    try:
-        from lightrag_bridge import query as lightrag_query
-        answer = await lightrag_query(
-            req.book_id, req.question,
-            mode="hybrid",
-        )
-    except Exception as e:
-        answer = None
-
-    if answer is None:
-        return _build_fallback_response(req.question, req.book_id)
-
-    return {"answer": answer, "references": []}
+    return _build_fallback_response(req.question, req.book_id)
 
 
 @router.post("/ask/stream")
@@ -86,20 +73,9 @@ async def ask_stream(req: ChatRequest):
         return StreamingResponse(empty(), media_type="text/event-stream")
 
     async def generate():
-        try:
-            from lightrag_bridge import query as lightrag_query
-            result = await lightrag_query(
-                req.book_id, req.question,
-                mode="hybrid", stream=True,
-            )
-            if result:
-                yield f"data: {result}\n\n"
-            else:
-                fb = _build_fallback_response(req.question, req.book_id)
-                yield f"data: {fb['answer']}\n\n"
-                yield f"data: __REFS__{json.dumps(fb['references'])}\n\n"
-        except Exception as e:
-            yield f"data: [Error: {str(e)}]\n\n"
+        fb = _build_fallback_response(req.question, req.book_id)
+        yield f"data: {fb['answer']}\n\n"
+        yield f"data: __REFS__{json.dumps(fb['references'])}\n\n"
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")

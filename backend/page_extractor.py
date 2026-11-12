@@ -14,7 +14,6 @@ import uuid
 import json_repair
 
 from database import get_db
-from extractor import _is_substantial_node
 from graph_store import sync_book_counts
 from services.llm import get_llm
 import page_service as ps
@@ -54,6 +53,88 @@ def clear_task(task_id: str | None) -> None:
         return
     with _cancel_lock:
         _cancel_events.pop(task_id, None)
+
+
+# ── Node substance filter (moved verbatim from the retired extractor.py) ──
+
+# Blocklist: generic single-word concepts that should never be nodes
+GENERIC_BLOCKLIST = {
+    "群", "环", "域", "模", "集", "数", "代数", "代数学", "数学",
+    "定理", "引理", "推论", "定义", "公理", "命题", "证明",
+    "group", "ring", "field", "set", "algebra", "math", "mathematics",
+    "theorem", "lemma", "corollary", "definition", "axiom", "proposition", "proof",
+    "结构", "概念", "性质", "关系", "对象", "理论",
+    "structure", "concept", "property", "relation", "object", "theory",
+}
+
+# Minimum content length required for a node to be accepted
+MIN_CONTENT_LEN = 40
+
+# Patterns that match bare function/variable notation: g(x), f(x,y), phi, H, G, alpha_1, etc.
+_SYMBOL_PATTERNS = [
+    re.compile(r'^[a-zA-Z]\\?$'),                          # single letter: x, f, H, G, α (bare)
+    re.compile(r'^[a-zA-Z]\\?\s*\([^)]*\)$'),              # f(x), g(y), H(s,t)
+    re.compile(r'^\\?[a-zA-Z][a-zA-Z0-9]?\s*\([^)]*\)$'), # f_1(x), G_0(y)
+    re.compile(r'^\\?[a-zA-Z]+_\d+$'),                     # f_1, x_0, G_2
+    re.compile(r'^\\?[a-zA-Z]{1,2}\'$'),                   # f', G' (derivative notation)
+    re.compile(r'^\\[a-zA-Z]+$'),                          # \alpha, \beta, \Gamma (LaTeX bare)
+]
+
+
+def _is_bare_symbol(name: str) -> bool:
+    """Check if the name is a bare mathematical symbol/function notation (reject)."""
+    stripped = name.strip()
+    for pat in _SYMBOL_PATTERNS:
+        if pat.match(stripped):
+            return True
+    return False
+
+
+def _is_valid_node(name: str, content_input) -> bool:
+    """Filter out garbage/generic/symbol nodes. content_input can be str or dict."""
+    if not name or len(name.strip()) < 2:
+        return False
+    name_lower = name.strip().lower()
+    if name_lower in GENERIC_BLOCKLIST:
+        return False
+    if _is_bare_symbol(name):
+        return False
+    # Bare numbered labels ("定理1", "Lemma 3") carry no information and are
+    # explicitly forbidden by the extraction prompt, yet models still emit them.
+    if re.match(
+        r"^(定理|引理|命题|定义|例|推论|公理|注记|"
+        r"lemma|theorem|definition|proposition|corollary|example|remark)"
+        r"\s*[\d.．、\-'′’]+$",
+        name_lower,
+    ):
+        return False
+    if len(name.strip()) <= 1:
+        return False
+    return True
+
+
+def _get_content_len(content) -> int:
+    """Get total length of content (str or structured dict)."""
+    if isinstance(content, str):
+        return len(content)
+    if isinstance(content, dict):
+        return sum(len(str(v)) for v in content.values())
+    return 0
+
+
+def _is_substantial_node(name: str, content) -> bool:
+    """Check if a node has enough content to stand on its own (not a stub)."""
+    if not _is_valid_node(name, content):
+        return False
+    if _get_content_len(content) < MIN_CONTENT_LEN:
+        return False
+    # Reject stub/generated content placeholders
+    if isinstance(content, str):
+        stub_markers = ["由「", "由\"", "被「", "引用", "referenced by"]
+        for marker in stub_markers:
+            if marker in content:
+                return False
+    return True
 
 PAGE_PROMPT = """你是数学文献分析专家。下面是从 PDF 第 {start}-{end} 页提取的文本，每段以 [pN] 开头标记页码。
 请提取其中有明确定义、定理陈述或证明的数学实体，作为**候选**供人工确认。原文可能有识别错误，宁可少提也不要编造。
@@ -114,8 +195,13 @@ def _parse_items(response: str) -> tuple[list[dict], bool]:
 
 
 def extract_window(book_id: str, start: int, end: int,
-                   task_id: str | None = None) -> dict:
+                   task_id: str | None = None, *,
+                   register: bool = True, clear: bool = True) -> dict:
+    if register and task_id:
+        register_task(task_id)
     if end < start or end - start > 2:
+        if clear:
+            clear_task(task_id)
         raise ValueError("window must be 1-3 pages")
     text = ps.window_text(book_id, start, end)
     if not text.strip():
@@ -144,7 +230,8 @@ def extract_window(book_id: str, start: int, end: int,
 
     # Nothing is written until the LLM returns AND the client has not cancelled.
     if is_cancelled(task_id):
-        clear_task(task_id)
+        if clear:
+            clear_task(task_id)
         return {"cancelled": True, "candidates": [], "raw_count": len(items),
                 "pages": [start, end]}
 
@@ -176,7 +263,8 @@ def extract_window(book_id: str, start: int, end: int,
                       "continues": bool(entity.get("continues", False))})
     conn.commit()
     conn.close()
-    clear_task(task_id)
+    if clear:
+        clear_task(task_id)
     return {"candidates": saved, "raw_count": len(items), "pages": [start, end],
             "task_id": task_id}
 
@@ -408,3 +496,87 @@ def merge_candidate(candidate_id: str, node_id: str) -> dict:
     conn.commit()
     conn.close()
     return {"ok": True, "undo_token": token}
+
+
+# ── Auto mode: serial window-by-window extraction into the pending queue ──
+#
+# Nothing here writes to graph_nodes — every artifact lands in candidates as
+# 'pending' and waits for human confirmation, exactly like a manual window.
+
+_auto_tasks: dict[str, dict] = {}
+_auto_lock = threading.Lock()
+
+
+def start_auto_extract(book_id: str, start: int, end: int,
+                       window_size: int = 2,
+                       task_id: str | None = None) -> dict:
+    if end < start:
+        raise ValueError("end page must be >= start page")
+    if end - start > 400:
+        raise ValueError("range too large — split it into chapters")
+    window_size = max(1, min(3, int(window_size)))
+    task_id = task_id or str(uuid.uuid4())
+
+    windows = []
+    w = start
+    while w <= end:
+        windows.append((w, min(w + window_size - 1, end)))
+        w += window_size
+
+    state = {
+        "task_id": task_id, "book_id": book_id, "status": "running",
+        "range": [start, end], "window_size": window_size,
+        "window_total": len(windows), "window_done": 0,
+        "current_window": None, "failed_windows": [],
+        "next_window": windows[0][0],
+    }
+    with _auto_lock:
+        _auto_tasks[task_id] = state
+    threading.Thread(target=_auto_loop, args=(state, windows), daemon=True).start()
+    return {"task_id": task_id, "window_total": len(windows),
+            "window_size": window_size}
+
+
+def auto_status(task_id: str) -> dict | None:
+    with _auto_lock:
+        state = _auto_tasks.get(task_id)
+        return dict(state) if state else None
+
+
+def _auto_loop(state: dict, windows: list[tuple[int, int]]) -> None:
+    book_id = state["book_id"]
+    start_page, end_page = state["range"]
+    try:
+        for w_start, w_end in windows:
+            if is_cancelled(state["task_id"]):
+                state["status"] = "cancelled"
+                return
+            state["current_window"] = [w_start, w_end]
+            ok = False
+            last_error = None
+            for attempt in range(2):  # one retry per window
+                try:
+                    extract_window(book_id, w_start, w_end,
+                                   task_id=state["task_id"],
+                                   register=False, clear=False)
+                    ok = True
+                    break
+                except Exception as e:
+                    last_error = e
+                    log.warning("auto window p%s-%s attempt %d failed: %s",
+                                w_start, w_end, attempt + 1, e)
+            if not ok:
+                state["failed_windows"].append(
+                    {"start": w_start, "end": w_end,
+                     "error": str(last_error)[:160] if last_error else "unknown"})
+            state["window_done"] += 1
+            nxt = w_end + 1
+            state["next_window"] = nxt if nxt <= end_page else None
+        state["status"] = "cancelled" if is_cancelled(state["task_id"]) else "done"
+    except Exception as e:
+        log.exception("auto extract loop crashed")
+        state["status"] = "error"
+        state["error"] = str(e)[:200]
+    finally:
+        state["current_window"] = None
+        clear_task(state["task_id"])

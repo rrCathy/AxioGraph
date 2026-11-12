@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     freeapi_base_url: str = "http://127.0.0.1:31415/v1"
     freeapi_api_key: str = ""
     freeapi_model: str = "auto"
+    freeapi_vision_model: str = ""
     freeapi_embedding_model: str = "auto"
     freeapi_embedding_dim: int = 1024
 

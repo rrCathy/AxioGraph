@@ -14,6 +14,12 @@ class ExtractRequest(BaseModel):
     end: int
 
 
+class AutoExtractRequest(BaseModel):
+    start: int
+    end: int
+    window_size: int = 2
+
+
 class ConfirmRequest(BaseModel):
     name: str | None = None
     quote: str | None = None
@@ -51,6 +57,28 @@ def extract(book_id: str, body: ExtractRequest,
 def candidates(book_id: str, status: str = "pending"):
     _require_book(book_id)
     return {"candidates": pe.list_candidates(book_id, status)}
+
+
+@router.post("/api/books/{book_id}/auto-extract")
+def auto_extract(book_id: str, body: AutoExtractRequest):
+    """Serial window-by-window extraction into the pending candidate queue.
+
+    Returns a task id; poll GET /auto-extract/{task_id} for progress and use
+    POST /api/tasks/{task_id}/cancel to stop between windows.
+    """
+    _require_book(book_id)
+    try:
+        return pe.start_auto_extract(book_id, body.start, body.end, body.window_size)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@router.get("/api/books/{book_id}/auto-extract/{task_id}")
+def auto_extract_status(book_id: str, task_id: str):
+    state = pe.auto_status(task_id)
+    if not state or state.get("book_id") != book_id:
+        raise HTTPException(404, "No such auto-extract task")
+    return state
 
 
 @router.get("/api/books/{book_id}/confirmed-nodes")

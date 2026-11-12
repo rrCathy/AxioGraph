@@ -60,6 +60,7 @@ def c_books():
 
 def c_graph():
     total_nodes = total_edges = 0
+    empty_books = 0
     for b in BOOKS:
         code, body = get(f"{BACKEND}/api/graph/{b['id']}")
         elements = json.loads(body)["elements"]
@@ -67,21 +68,33 @@ def c_graph():
         edges = elements["edges"]
         bad = [e for e in edges
                if e["data"]["source"] not in nodes or e["data"]["target"] not in nodes]
-        assert nodes and edges, f"{b['title']}: empty graph"
+        # A freshly imported book legitimately has no graph yet — skip it,
+        # but any book WITH data must have consistent counters.
+        if not nodes:
+            empty_books += 1
+            assert not bad
+            continue
         assert not bad, f"{b['title']}: {len(bad)} dangling edges"
         assert (len(nodes), len(edges)) == (b["node_count"], b["edge_count"]), \
             f"{b['title']}: counters {b['node_count']}/{b['edge_count']} != {len(nodes)}/{len(edges)}"
         total_nodes += len(nodes)
         total_edges += len(edges)
-    return f"{total_nodes} nodes / {total_edges} edges, no dangling edges, counters in sync"
+    assert total_nodes > 0, "no book has any graph data at all"
+    note = f", {empty_books} empty book(s) skipped" if empty_books else ""
+    return f"{total_nodes} nodes / {total_edges} edges, no dangling edges, counters in sync{note}"
 
 
 def c_node_detail():
-    _, body = get(f"{BACKEND}/api/graph/{BOOKS[0]['id']}")
-    nid = json.loads(body)["elements"]["nodes"][0]["data"]["id"]
-    code, detail = get(f"{BACKEND}/api/graph/node/{nid}")
-    assert code == 200 and json.loads(detail).get("id") == nid
-    return f"node {nid[:8]}"
+    for b in BOOKS:
+        _, body = get(f"{BACKEND}/api/graph/{b['id']}")
+        nodes = json.loads(body)["elements"]["nodes"]
+        if not nodes:
+            continue
+        nid = nodes[0]["data"]["id"]
+        code, detail = get(f"{BACKEND}/api/graph/node/{nid}")
+        assert code == 200 and json.loads(detail).get("id") == nid
+        return f"node {nid[:8]}"
+    raise AssertionError("no book with graph data")
 
 
 def c_frontend():

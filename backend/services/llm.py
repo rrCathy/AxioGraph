@@ -1,4 +1,3 @@
-import hashlib
 import httpx
 from openai import OpenAI, AsyncOpenAI
 
@@ -43,6 +42,36 @@ class FreeAPIProvider:
         )
         return resp.choices[0].message.content or ""
 
+    def chat_vision(self, prompt: str, png_bytes: bytes,
+                    system: str | None = None,
+                    model: str | None = None, **kwargs) -> str:
+        """One-shot image + text call against a vision-capable model.
+
+        `model` defaults to get_vision_model(); FreeLLMAPI routes text models
+        by `self.model`, but image input needs an explicitly vision-capable id.
+        """
+        from services.llm import get_vision_model
+        import base64
+
+        data_uri = "data:image/png;base64," + base64.b64encode(png_bytes).decode()
+        messages: list[dict] = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({
+            "role": "user",
+            "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": data_uri}},
+            ],
+        })
+        resp = self.client.chat.completions.create(
+            model=model or get_vision_model(),
+            messages=messages,
+            temperature=kwargs.get("temperature", 0.1),
+            max_tokens=kwargs.get("max_tokens", 8192),
+        )
+        return resp.choices[0].message.content or ""
+
 
 def get_llm(task: str = "extraction") -> FreeAPIProvider:
     """Return the FreeLLMAPI client.
@@ -58,51 +87,11 @@ def get_llm(task: str = "extraction") -> FreeAPIProvider:
     )
 
 
-def get_embedding_func():
-    """Embedding function for LightRAG, backed by FreeLLMAPI.
+def get_vision_model() -> str:
+    """Model id used for image-input calls (page OCR, TOC parsing).
 
-    Falls back to a deterministic hash embedding when no API key is configured.
+    Overridable via FREEAPI_VISION_MODEL in backend/.env; the default comes
+    from the bake-off recorded in docs/sop/vision-ocr-bakeoff.md.
     """
-    import numpy as np
-    from lightrag.utils import wrap_embedding_func_with_attrs
     from config import settings
-
-    if settings.freeapi_api_key:
-
-        @wrap_embedding_func_with_attrs(
-            embedding_dim=settings.freeapi_embedding_dim,
-            max_token_size=8192,
-            model_name=settings.freeapi_embedding_model,
-        )
-        async def embedding_func(texts: list[str]) -> np.ndarray:
-            client = _make_client(
-                settings.freeapi_api_key,
-                settings.freeapi_base_url,
-                async_client=True,
-            )
-            response = await client.embeddings.create(
-                model=settings.freeapi_embedding_model,
-                input=texts,
-                encoding_format="float",
-            )
-            return np.array([dp.embedding for dp in response.data])
-
-        return embedding_func
-
-    @wrap_embedding_func_with_attrs(
-        embedding_dim=256,
-        max_token_size=8192,
-        model_name="hash-embedding",
-    )
-    async def fallback(texts: list[str]) -> np.ndarray:
-        vecs = np.zeros((len(texts), 256), dtype=np.float32)
-        for i, text in enumerate(texts):
-            for j in range(256):
-                h = hashlib.md5(f"{j}:{text}".encode()).digest()
-                vecs[i, j] = (h[0] / 255.0) * 2 - 1
-            norm = np.linalg.norm(vecs[i])
-            if norm > 0:
-                vecs[i] /= norm
-        return vecs
-
-    return fallback
+    return settings.freeapi_vision_model or "glm-4.6v-flash"
