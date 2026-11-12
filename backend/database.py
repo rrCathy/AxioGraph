@@ -96,6 +96,17 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_nodes_type ON graph_nodes(entity_type);
         CREATE INDEX IF NOT EXISTS idx_edges_source ON graph_edges(source_id);
         CREATE INDEX IF NOT EXISTS idx_edges_target ON graph_edges(target_id);
+        CREATE TABLE IF NOT EXISTS action_log (
+            token TEXT PRIMARY KEY,
+            book_id TEXT NOT NULL,
+            action TEXT NOT NULL,
+            candidate_id TEXT,
+            node_id TEXT,
+            before_json TEXT,
+            expires_at REAL NOT NULL,
+            undone INTEGER DEFAULT 0
+        );
+
         CREATE INDEX IF NOT EXISTS idx_pages_book ON pages(book_id);
         CREATE INDEX IF NOT EXISTS idx_candidates_book ON candidates(book_id, status);
     """)
@@ -124,6 +135,7 @@ def init_db():
             ("merged_into", "TEXT"),
         ]),
         ("graph_edges", [("review_status", "TEXT DEFAULT 'legacy'")]),
+        ("candidates", [("dropped_relations_json", "TEXT DEFAULT '[]'")]),
     ]:
         for col, col_type in cols:
             try:

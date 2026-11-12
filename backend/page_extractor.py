@@ -7,6 +7,8 @@ import difflib
 import json
 import logging
 import re
+import threading
+import time
 import uuid
 
 import json_repair
@@ -18,6 +20,40 @@ from services.llm import get_llm
 import page_service as ps
 
 log = logging.getLogger("axiograph.extract")
+
+# Cooperative cancellation for long extraction calls. AbortController on the
+# client only kills the HTTP request; this flag stops the server from writing.
+_cancel_events: dict[str, threading.Event] = {}
+_cancel_lock = threading.Lock()
+
+
+def register_task(task_id: str) -> None:
+    with _cancel_lock:
+        _cancel_events[task_id] = threading.Event()
+
+
+def cancel_task(task_id: str) -> bool:
+    with _cancel_lock:
+        event = _cancel_events.get(task_id)
+    if event is None:
+        return False
+    event.set()
+    return True
+
+
+def is_cancelled(task_id: str | None) -> bool:
+    if not task_id:
+        return False
+    with _cancel_lock:
+        event = _cancel_events.get(task_id)
+    return bool(event and event.is_set())
+
+
+def clear_task(task_id: str | None) -> None:
+    if not task_id:
+        return
+    with _cancel_lock:
+        _cancel_events.pop(task_id, None)
 
 PAGE_PROMPT = """你是数学文献分析专家。下面是从 PDF 第 {start}-{end} 页提取的文本，每段以 [pN] 开头标记页码。
 请提取其中有明确定义、定理陈述或证明的数学实体，作为**候选**供人工确认。原文可能有识别错误，宁可少提也不要编造。
@@ -77,7 +113,8 @@ def _parse_items(response: str) -> tuple[list[dict], bool]:
     return [], False
 
 
-def extract_window(book_id: str, start: int, end: int) -> dict:
+def extract_window(book_id: str, start: int, end: int,
+                   task_id: str | None = None) -> dict:
     if end < start or end - start > 2:
         raise ValueError("window must be 1-3 pages")
     text = ps.window_text(book_id, start, end)
@@ -104,6 +141,12 @@ def extract_window(book_id: str, start: int, end: int) -> dict:
                     attempt + 1, (response or "")[:200])
     if not parsed_ok:
         log.error("extraction produced no JSON for pages %s-%s", start, end)
+
+    # Nothing is written until the LLM returns AND the client has not cancelled.
+    if is_cancelled(task_id):
+        clear_task(task_id)
+        return {"cancelled": True, "candidates": [], "raw_count": len(items),
+                "pages": [start, end]}
 
     conn = get_db()
     saved = []
@@ -133,7 +176,9 @@ def extract_window(book_id: str, start: int, end: int) -> dict:
                       "continues": bool(entity.get("continues", False))})
     conn.commit()
     conn.close()
-    return {"candidates": saved, "raw_count": len(items), "pages": [start, end]}
+    clear_task(task_id)
+    return {"candidates": saved, "raw_count": len(items), "pages": [start, end],
+            "task_id": task_id}
 
 
 def list_candidates(book_id: str, status: str = "pending") -> list[dict]:
@@ -165,20 +210,34 @@ def _match_target(conn, book_id: str, target: str) -> str | None:
     return names[close[0]] if close else None
 
 
-def _add_relations(conn, book_id: str, node_id: str, relations_json: str) -> int:
-    added = 0
+def _relation_lists(conn, book_id: str, relations_json: str) -> tuple[list[dict], list[dict]]:
+    """Split relations into those that resolve to a confirmed node and those
+    that would otherwise be silently discarded."""
+    matched, dropped = [], []
     for rel in json.loads(relations_json or "[]"):
-        target = str(rel.get("target", "")).strip()
-        if not target:
+        item = {
+            "target": str(rel.get("target", "")).strip(),
+            "type": str(rel.get("type", "DEPENDS_ON")).upper(),
+            "note": str(rel.get("note", ""))[:300],
+        }
+        if not item["target"]:
             continue
-        target_id = _match_target(conn, book_id, target)
+        target_id = _match_target(conn, book_id, item["target"])
+        (matched if target_id else dropped).append({**item, "target_id": target_id})
+    return matched, dropped
+
+
+def _add_relations(conn, book_id: str, node_id: str, relations_json: str) -> tuple[int, list[dict]]:
+    matched, dropped = _relation_lists(conn, book_id, relations_json)
+    added = 0
+    for rel in matched:
+        target_id = rel["target_id"]
         if not target_id or target_id == node_id:
             continue
-        rtype = str(rel.get("type", "DEPENDS_ON")).upper()
         exists = conn.execute(
             """SELECT id FROM graph_edges WHERE source_id = ? AND target_id = ?
                AND relation_type = ? AND book_id = ?""",
-            (node_id, target_id, rtype, book_id),
+            (node_id, target_id, rel["type"], book_id),
         ).fetchone()
         if exists:
             continue
@@ -186,10 +245,23 @@ def _add_relations(conn, book_id: str, node_id: str, relations_json: str) -> int
             """INSERT INTO graph_edges
                (source_id, target_id, relation_type, description, book_id, review_status)
                VALUES (?, ?, ?, ?, ?, 'confirmed')""",
-            (node_id, target_id, rtype, str(rel.get("note", ""))[:300], book_id),
+            (node_id, target_id, rel["type"], rel["note"], book_id),
         )
         added += 1
-    return added
+    return added, dropped
+
+
+def _log_action(conn, book_id: str, action: str, candidate_id: str,
+                node_id: str | None, before: dict) -> str:
+    token = str(uuid.uuid4())
+    conn.execute(
+        """INSERT INTO action_log
+           (token, book_id, action, candidate_id, node_id, before_json, expires_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (token, book_id, action, candidate_id, node_id,
+         json.dumps(before, ensure_ascii=False), time.time() + 8),
+    )
+    return token
 
 
 def confirm_candidate(candidate_id: str, name_override: str | None = None,
@@ -206,16 +278,17 @@ def confirm_candidate(candidate_id: str, name_override: str | None = None,
     name = (name_override or c["name"]).strip()
     quote = (quote_override or c["quote"] or "").strip()
     book_id = c["book_id"]
+    before: dict = {}
 
-    # Same name + type already confirmed: merge instead of duplicating.
     existing = conn.execute(
-        """SELECT id, content FROM graph_nodes
+        """SELECT id, content, page_end FROM graph_nodes
            WHERE book_id = ? AND name = ? AND entity_type = ?
              AND review_status = 'confirmed'""",
         (book_id, name, c["entity_type"]),
     ).fetchone()
     if existing:
         node_id = existing["id"]
+        before = {"content": existing["content"], "page_end": existing["page_end"]}
         merged_content = (existing["content"] or "") + "\n\n" + (c["content"] or "")
         conn.execute("UPDATE graph_nodes SET content = ?, page_end = ? WHERE id = ?",
                      (merged_content, c["page_end"], node_id))
@@ -236,35 +309,102 @@ def confirm_candidate(candidate_id: str, name_override: str | None = None,
         conn.execute("UPDATE candidates SET status = 'confirmed' WHERE id = ?", (candidate_id,))
         action = "created"
 
-    edges = _add_relations(conn, book_id, node_id, c["relations_json"])
+    edges, dropped = _add_relations(conn, book_id, node_id, c["relations_json"])
+    conn.execute("UPDATE candidates SET dropped_relations_json = ? WHERE id = ?",
+                 (json.dumps(dropped, ensure_ascii=False), candidate_id))
+    token = _log_action(conn, book_id, action, candidate_id, node_id, before)
     sync_book_counts(conn, book_id)
     conn.commit()
     conn.close()
-    return {"ok": True, "action": action, "node_id": node_id, "edges_added": edges}
+    return {"ok": True, "action": action, "node_id": node_id,
+            "edges_added": edges, "relations_dropped": len(dropped),
+            "undo_token": token}
 
 
-def reject_candidate(candidate_id: str) -> bool:
+def preview_candidate(candidate_id: str) -> dict | None:
+    """Dry-run: show merge target and relations that would be dropped, without
+    touching the database."""
+    conn = get_db()
+    c = conn.execute("SELECT * FROM candidates WHERE id = ?", (candidate_id,)).fetchone()
+    if not c:
+        conn.close()
+        return None
+    twin = conn.execute(
+        """SELECT id, name, page_end FROM graph_nodes
+           WHERE book_id = ? AND name = ? AND entity_type = ?
+             AND review_status = 'confirmed'""",
+        (c["book_id"], c["name"], c["entity_type"]),
+    ).fetchone()
+    matched, dropped = _relation_lists(conn, c["book_id"], c["relations_json"])
+    conn.close()
+    return {
+        "action": "merged" if twin else "created",
+        "merge_target": twin["name"] if twin else None,
+        "page_end_after": c["page_end"],
+        "relations_matched": [r["target"] for r in matched],
+        "relations_dropped": dropped,
+    }
+
+
+def undo_action(token: str) -> bool:
+    conn = get_db()
+    row = conn.execute("SELECT * FROM action_log WHERE token = ?", (token,)).fetchone()
+    if not row or row["undone"] or row["expires_at"] < time.time():
+        conn.close()
+        return False
+    before = json.loads(row["before_json"] or "{}")
+    action = row["action"]
+
+    if action == "created":
+        conn.execute("DELETE FROM graph_edges WHERE source_id = ? OR target_id = ?",
+                     (row["node_id"], row["node_id"]))
+        conn.execute("DELETE FROM graph_nodes WHERE id = ?", (row["node_id"],))
+    elif action in ("merged", "merge"):
+        conn.execute("UPDATE graph_nodes SET content = ?, page_end = ? WHERE id = ?",
+                     (before.get("content"), before.get("page_end"), row["node_id"]))
+    if action != "rejected":
+        conn.execute("UPDATE candidates SET status = 'pending', merged_into = NULL WHERE id = ?",
+                     (row["candidate_id"],))
+    else:
+        conn.execute("UPDATE candidates SET status = 'pending' WHERE id = ?",
+                     (row["candidate_id"],))
+    conn.execute("UPDATE action_log SET undone = 1 WHERE token = ?", (token,))
+    sync_book_counts(conn, row["book_id"])
+    conn.commit()
+    conn.close()
+    return True
+
+
+def reject_candidate(candidate_id: str) -> dict:
     conn = get_db()
     cur = conn.execute("UPDATE candidates SET status = 'rejected' WHERE id = ? AND status = 'pending'",
                        (candidate_id,))
+    if cur.rowcount == 0:
+        conn.close()
+        return {"ok": False}
+    book = conn.execute("SELECT book_id FROM candidates WHERE id = ?", (candidate_id,)).fetchone()
+    token = _log_action(conn, book["book_id"], "rejected", candidate_id, None, {})
     conn.commit()
     conn.close()
-    return cur.rowcount > 0
+    return {"ok": True, "undo_token": token}
 
 
-def merge_candidate(candidate_id: str, node_id: str) -> bool:
+def merge_candidate(candidate_id: str, node_id: str) -> dict:
     conn = get_db()
     c = conn.execute("SELECT * FROM candidates WHERE id = ? AND status = 'pending'",
                      (candidate_id,)).fetchone()
-    n = conn.execute("SELECT id, content, book_id FROM graph_nodes WHERE id = ?", (node_id,)).fetchone()
+    n = conn.execute("SELECT id, content, book_id, page_end FROM graph_nodes WHERE id = ?",
+                     (node_id,)).fetchone()
     if not c or not n or c["book_id"] != n["book_id"]:
         conn.close()
-        return False
+        return {"ok": False}
+    before = {"content": n["content"], "page_end": n["page_end"]}
     conn.execute("UPDATE graph_nodes SET content = ? WHERE id = ?",
                  ((n["content"] or "") + "\n\n" + (c["content"] or ""), node_id))
     conn.execute("UPDATE candidates SET status = 'merged', merged_into = ? WHERE id = ?",
                  (node_id, candidate_id))
+    token = _log_action(conn, n["book_id"], "merge", candidate_id, node_id, before)
     sync_book_counts(conn, n["book_id"])
     conn.commit()
     conn.close()
-    return True
+    return {"ok": True, "undo_token": token}

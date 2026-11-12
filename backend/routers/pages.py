@@ -28,12 +28,26 @@ def _require_book(book_id: str):
 
 
 @router.post("/{book_id}/import-pages")
-def import_pages_for_book(book_id: str):
-    """(Re)build the per-page text index for an already uploaded PDF."""
+def import_pages_for_book(book_id: str, dry_run: bool = False):
+    """(Re)build the per-page text index. dry_run reports the effect without
+    writing: raw text/blocks/status are overwritten, corrected text is kept."""
     _require_book(book_id)
     path = ps.pdf_path(book_id)
     if not path.exists():
         raise HTTPException(404, f"PDF missing: {path.name}")
+    if dry_run:
+        import pymupdf as fitz
+        doc = fitz.open(str(path))
+        count = len(doc)
+        doc.close()
+        conn = get_db()
+        edited = conn.execute(
+            "SELECT COUNT(*) FROM pages WHERE book_id = ? AND text_corrected IS NOT NULL",
+            (book_id,),
+        ).fetchone()[0]
+        conn.close()
+        return {"ok": True, "dry_run": True, "page_count": count,
+                "edited_pages_preserved": edited}
     count = ps.import_pages(book_id, path)
     return {"ok": True, "page_count": count}
 

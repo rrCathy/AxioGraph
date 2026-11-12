@@ -1,10 +1,10 @@
-import { useState } from 'react'
+import { lazy, Suspense, useState } from 'react'
 import Layout from './components/Layout'
-import UploadBook from './components/UploadBook'
-import GraphView from './components/GraphView'
-import NodeDetail from './components/NodeDetail'
-import ChatPanel from './components/ChatPanel'
 import Workbench from './components/Workbench'
+const UploadBook = lazy(() => import('./components/UploadBook'))
+const GraphView = lazy(() => import('./components/GraphView'))
+const NodeDetail = lazy(() => import('./components/NodeDetail'))
+const ChatPanel = lazy(() => import('./components/ChatPanel'))
 import EmptyState from './components/ui/EmptyState'
 import { useAppStore } from './stores/appStore'
 import { useI18n } from './i18n/useI18n'
@@ -81,6 +81,7 @@ export default function App() {
         </header>
 
         <div className="flex-1 flex min-h-0 overflow-hidden">
+          <Suspense fallback={<div className="p-6 flex-1"><EmptyState>正在加载…</EmptyState></div>}>
           {tab === 'workbench' && (
             <div className="flex-1 min-w-0">
               <Workbench />
@@ -130,6 +131,7 @@ export default function App() {
               <ChatPanel />
             </div>
           )}
+          </Suspense>
         </div>
       </div>
     </Layout>
