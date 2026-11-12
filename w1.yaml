@@ -1,0 +1,55 @@
+- generic [ref=e3]:
+  - main [ref=e4]:
+    - generic [ref=e5]:
+      - generic [ref=e6]:
+        - generic [ref=e7]:
+          - generic [aria-hidden] [ref=e8]: ◇
+          - generic [ref=e9]: AxioGraph
+          - generic [ref=e10]: MATH KG
+        - tablist "主导航" [ref=e12]:
+          - tab "工作台" [selected] [ref=e13] [cursor=pointer]
+          - tab "书籍库" [ref=e14] [cursor=pointer]
+          - tab "图谱" [ref=e15] [cursor=pointer]
+          - tab "提问" [ref=e16] [cursor=pointer]
+        - generic [ref=e17]:
+          - combobox "界面主题" [ref=e18]:
+            - option "暗房" [selected]
+            - option "纸本"
+            - option "跟随系统"
+          - button "EN" [ref=e19] [cursor=pointer]
+      - generic [ref=e22]:
+        - generic [ref=e23]:
+          - combobox "选择书籍" [ref=e24]:
+            - option "选择书籍" [disabled] [selected]
+            - option "d4bfb96a-82ad-4739-9809-1faa18ad0d9f"
+            - option "代数拓扑"
+            - option "简明复分析"
+          - button "‹" [disabled] [ref=e26]
+          - generic [ref=e27]: 1 / –
+          - button "›" [disabled] [ref=e28]
+          - generic [ref=e29]: 窗口
+          - combobox "窗口" [ref=e30]:
+            - option "1" [selected]
+            - option "2"
+            - option "3"
+          - generic [ref=e31]: p1–p1
+          - button "分析本窗口" [disabled] [ref=e32]
+          - button "视觉识别" [disabled] [ref=e33]
+          - button "OCR 本页" [disabled] [ref=e34]
+          - button "自动模式" [disabled] [ref=e35]
+          - button "书籍结构" [disabled] [ref=e36]
+          - button "重新导入页" [disabled] [ref=e37]
+        - generic [ref=e38]:
+          - generic [ref=e39]: 请先在书籍库选择一本书
+          - generic [ref=e43]:
+            - generic [ref=e44]: — 尚未挂引用 —
+            - generic [ref=e46]:
+              - button "提取文本" [ref=e47] [cursor=pointer]
+              - button "候选 (0)" [ref=e48] [cursor=pointer]
+            - generic [ref=e49]: 本页暂无提取文本
+            - generic [ref=e51]:
+              - button "已确认 (0)" [expanded] [ref=e52] [cursor=pointer]:
+                - generic [aria-hidden] [ref=e53]: ▾
+              - generic [ref=e55]: 本书还没有人工确认的节点
+  - status [ref=e58]
+  - alert [ref=e59]

@@ -1,3 +1,15 @@
 [20:44:51] rendering 323fea46 p13 at zoom 2.0
 [20:44:51] png 532 KB (1190x1682)
 [20:44:54] FAIL glm-4.6v-flash (2.2s): RateLimitError: Error code: 429 - {'error': {'message': 'All models rate-limited. Last error: Zhipu AI API error 429: 该模型当前访问量过大，请您稍后再试', 'type': 'rate_limit_error'}}
+[20:45:54] FAIL llama-3.2-90b-vision (15.0s): RateLimitError: Error code: 429 - {'error': {'message': 'All models rate-limited. Last error: This operation was aborted', 'type': 'rate_limit_error'}}
+[20:46:44] FAIL nemotron-parse-2.0 (5.3s): RateLimitError: Error code: 429 - {'error': {'message': "All models rate-limited. Last error: NVIDIA NIM API error 400: This model's maximum context length is 4096 tokens. Howe
+[20:47:35] FAIL moondream-3.1-9b-a2b (6.0s): RateLimitError: Error code: 429 - {'error': {'message': 'All models rate-limited. Last error: empty completion from Moondream 3.1 9B A2B (CF)', 'type': 'rate_limit_error'}}
+[20:48:20] FAIL llava-1.5-7b (0.0s): RateLimitError: Error code: 429 - {'error': {'message': 'All models exhausted. Add more API keys or wait for rate limits to reset.', 'type': 'routing_error'}}
+[20:49:05] round 1 done, cooling 90s before next round
+[20:50:36] FAIL glm-4.6v-flash (0.8s): RateLimitError: Error code: 429 - {'error': {'message': 'All models rate-limited. Last error: Zhipu AI API error 429: 该模型当前访问量过大，请您稍后再试', 'type': 'rate_limit_error'}}
+[20:51:36] FAIL llama-3.2-90b-vision (15.0s): RateLimitError: Error code: 429 - {'error': {'message': 'All models rate-limited. Last error: This operation was aborted', 'type': 'rate_limit_error'}}
+[20:52:24] FAIL nemotron-parse-2.0 (3.1s): RateLimitError: Error code: 429 - {'error': {'message': "All models rate-limited. Last error: NVIDIA NIM API error 400: This model's maximum context length is 4096 tokens. Howe
+[20:53:17] FAIL moondream-3.1-9b-a2b (7.8s): RateLimitError: Error code: 429 - {'error': {'message': 'All models rate-limited. Last error: empty completion from Moondream 3.1 9B A2B (CF)', 'type': 'rate_limit_error'}}
+[20:54:02] FAIL llava-1.5-7b (0.0s): RateLimitError: Error code: 429 - {'error': {'message': 'All models exhausted. Add more API keys or wait for rate limits to reset.', 'type': 'routing_error'}}
+[20:54:47] round 2 done, cooling 90s before next round
+[20:56:17] ALL MODELS FAILED
