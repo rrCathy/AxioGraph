@@ -96,7 +96,12 @@ export default function MathContent({ text, className = '' }: Props) {
             />
           )
         } catch {
-          return <span key={i} className="text-red-400">[{part.value}]</span>
+          return (
+            <span key={i} className="text-ag-mathError">
+              <span className="ag-sr-only">公式无法解析：</span>
+              [{part.value}]
+            </span>
+          )
         }
       })}
     </span>

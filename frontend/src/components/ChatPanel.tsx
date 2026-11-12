@@ -2,6 +2,8 @@ import { useState, useRef, useEffect } from 'react'
 import { askQuestion } from '../services/api'
 import { useAppStore } from '../stores/appStore'
 import RichContent from './RichContent'
+import Button from './ui/Button'
+import EmptyState from './ui/EmptyState'
 
 export default function ChatPanel() {
   const { chatMessages, addChatMessage, selectedBookId, books, selectNode } = useAppStore()
@@ -41,7 +43,6 @@ export default function ChatPanel() {
     }
   }
 
-  // Fix LLM-output literal unicode escapes like \u{26f3}
   const fixUnicodeEscapes = (text: string): string => {
     return text.replace(/\\u\{([0-9A-Fa-f]+)\}/g, (_, hex) => {
       return String.fromCodePoint(parseInt(hex, 16))
@@ -49,46 +50,47 @@ export default function ChatPanel() {
   }
 
   return (
-    <div className="flex flex-col h-full">
-      <div className="px-4 py-3 border-b border-gray-800">
-        <h2 className="font-semibold">AI 数学导师</h2>
+    <div className="flex flex-col h-full min-h-0">
+      <div className="px-4 py-3 border-b border-ag-line1 bg-ag-bg1">
+        <h2 className="text-h3 font-medium text-ag-ink1">AI 数学导师</h2>
         {selectedBook && (
-          <p className="text-xs text-gray-500">
+          <p className="ag-mono text-caption text-ag-ink3">
             上下文：{selectedBook.title}
             {selectedBook.node_count > 0 && ` (${selectedBook.node_count} 节点, ${selectedBook.edge_count} 边)`}
           </p>
         )}
         {!selectedBookId && (
-          <p className="text-xs text-gray-500">未选择书籍 — 搜索所有知识图谱</p>
+          <p className="text-caption text-ag-ink3">未选择书籍 — 搜索所有知识图谱</p>
         )}
       </div>
 
-      <div className="flex-1 overflow-auto p-4 space-y-4">
+      <div className="flex-1 overflow-auto p-4 space-y-4 bg-ag-bg2">
         {chatMessages.length === 0 && (
-          <div className="text-center text-gray-500 mt-10">
-            <p className="text-3xl mb-2">🧮</p>
-            <p>提问关于你书中数学知识的问题。</p>
-            <p className="text-sm mt-1">例如："什么是极限？"或"证明中值定理"</p>
+          <div className="mt-10">
+            <EmptyState>提问关于你书中数学知识的问题 · 例如“什么是极限？”</EmptyState>
           </div>
         )}
 
-        {chatMessages.map((msg, i) => (
-          <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+        {chatMessages.map((msg, i) => {
+          const isUser = msg.role === 'user'
+          return (
             <div
-              className={`max-w-[80%] rounded-lg px-4 py-2.5 text-sm whitespace-pre-wrap
-                ${msg.role === 'user'
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-gray-800 text-gray-200'}`}
+              key={i}
+              className="border-l-2 pl-3 py-1"
+              style={{ borderColor: isUser ? 'var(--ag-cinnabar)' : 'var(--ag-line-3)' }}
             >
-              <RichContent text={fixUnicodeEscapes(msg.content)} />
+              <p className="ag-mono text-micro text-ag-ink3 mb-1">{isUser ? '问' : '答'}</p>
+              <div className="text-body text-ag-ink2 leading-relaxed max-w-measure whitespace-pre-wrap">
+                <RichContent text={fixUnicodeEscapes(msg.content)} />
+              </div>
               {msg.refs && msg.refs.length > 0 && (
-                <div className="mt-2 pt-2 border-t border-gray-700">
-                  <p className="text-xs text-gray-400 mb-1">参考：</p>
+                <div className="mt-2 pt-2 border-t border-ag-line1">
+                  <p className="text-caption text-ag-ink3 mb-1">参考：</p>
                   {msg.refs.map((ref: any, j: number) => (
                     <button
                       key={j}
                       onClick={() => selectNode(ref.id)}
-                      className="block text-xs text-blue-400 hover:text-blue-300 transition"
+                      className="ag-focus-ring block text-caption text-ag-cinnabar hover:underline"
                     >
                       [{ref.type}] {ref.name}
                     </button>
@@ -96,37 +98,31 @@ export default function ChatPanel() {
                 </div>
               )}
             </div>
-          </div>
-        ))}
+          )
+        })}
 
         {loading && (
-          <div className="flex justify-start">
-            <div className="bg-gray-800 rounded-lg px-4 py-2.5 text-sm text-gray-400">
-              Thinking...
-            </div>
+          <div className="border-l-2 border-ag-line3 pl-3 py-1">
+            <span className="text-body text-ag-ink3">Thinking…</span>
           </div>
         )}
 
         <div ref={bottomRef} />
       </div>
 
-      <div className="p-3 border-t border-gray-800">
+      <div className="p-3 border-t border-ag-line1 bg-ag-bg1">
         <div className="flex gap-2">
           <input
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder="提问关于你的数学知识图谱..."
-            className="flex-1 bg-gray-800 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+            className="ag-focus-ring flex-1 bg-ag-bg2 rounded-btn px-4 py-2 text-body border border-ag-line2 text-ag-ink1"
             disabled={loading}
           />
-          <button
-            onClick={handleSend}
-            disabled={loading || !input.trim()}
-            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 rounded-lg text-sm font-medium transition"
-          >
+          <Button variant="primary" onClick={() => void handleSend()} disabled={loading || !input.trim()}>
             发送
-          </button>
+          </Button>
         </div>
       </div>
     </div>

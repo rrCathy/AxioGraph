@@ -99,7 +99,7 @@ export default function RichContent({ text, className = '' }: Props) {
       const lines = block.split('\n')
       const code = lines.slice(1, -1).join('\n')
       processed.push(
-        <pre key={b} className="bg-surface-overlay rounded-lg p-3 my-2 overflow-x-auto">
+        <pre key={b} className="bg-ag-bg2 rounded-card p-3 my-2 overflow-x-auto">
           <code className="text-sm font-mono text-text-secondary">{code}</code>
         </pre>
       )
@@ -179,14 +179,14 @@ function InlineSegments({ text }: { text: string }) {
                 throwOnError: false, displayMode: seg.type === 'display', trust: false,
               })
               return <span key={idx} dangerouslySetInnerHTML={{ __html: html }} className={seg.type === 'display' ? 'block my-2 text-center' : ''} />
-            } catch { return <span key={idx} className="text-red-400">[{seg.value}]</span> }
+            } catch { return <span key={idx} className="text-ag-mathError">[{seg.value}]</span> }
           }
           case 'bold':
             return <strong key={idx} className="font-semibold text-text-primary"><InlineSegments text={seg.value} /></strong>
           case 'italic':
             return <em key={idx}><InlineSegments text={seg.value} /></em>
           case 'code':
-            return <code key={idx} className="px-1 py-0.5 bg-surface-overlay rounded text-xs font-mono text-accent-green">{seg.value}</code>
+            return <code key={idx} className="px-1 py-0.5 bg-ag-bg2 rounded text-caption ag-mono text-ag-ink2">{seg.value}</code>
           default:
             return null
         }

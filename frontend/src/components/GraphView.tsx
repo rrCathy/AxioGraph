@@ -1,5 +1,9 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import cytoscape, { Core } from 'cytoscape'
+import { readThemePalette, buildCyStyle } from '../theme/themePalette'
+import { THEME_EVENT } from '../theme/theme'
+import { entityKeyOf, ENTITY_META, type EntityKey } from '../theme/entityMeta'
+import GraphA11yPanel from './graph/GraphA11yPanel'
 import { useAppStore } from '../stores/appStore'
 import { searchNodes } from '../services/api'
 import { useI18n } from '../i18n/useI18n'
@@ -22,7 +26,7 @@ export default function GraphView() {
   const runningRef = useRef(true)
 
   const [simRunning, setSimRunning] = useState(true)
-  const { graphData, selectedBookId, books, selectNode, selectBook, lang } = useAppStore()
+  const { graphData, selectedBookId, books, selectNode, selectBook, lang, selectedNodeId } = useAppStore()
   const selectedBook = books.find((b) => b.id === selectedBookId)
   const { t } = useI18n()
 
@@ -38,6 +42,30 @@ export default function GraphView() {
   const [searchOpen, setSearchOpen] = useState(false)
   const [searching, setSearching] = useState(false)
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const [typeFilter, setTypeFilter] = useState<EntityKey | null>(null)
+  const [listMode, setListMode] = useState(false)
+
+  // Canvas cannot read CSS variables: re-apply concrete colours on theme change.
+  useEffect(() => {
+    const onChange = () => {
+      const cy = cyRef.current
+      if (cy) cy.style(buildCyStyle(readThemePalette()))
+    }
+    window.addEventListener(THEME_EVENT, onChange)
+    return () => window.removeEventListener(THEME_EVENT, onChange)
+  }, [])
+
+  useEffect(() => {
+    const cy = cyRef.current
+    if (!cy) return
+    cy.batch(() => {
+      cy.nodes().forEach((n) => {
+        n.toggleClass('dimmed', typeFilter !== null && n.data('entity_key') !== typeFilter)
+      })
+      cy.edges().toggleClass('dimmed', typeFilter !== null)
+    })
+  }, [typeFilter, graphData])
 
   // Debounced search
   useEffect(() => {
@@ -192,78 +220,32 @@ export default function GraphView() {
       wheelSensitivity: 0, // Disabled — custom normalized handler below
       minZoom: 0.03,
       maxZoom: 5.0,
-      style: [
-        {
-          selector: 'node',
-          style: {
-            'background-color': 'data(color)',
-            'label': 'data(name)',
-            'color': '#e4e4e7',
-            'font-size': '10px',
-            'text-valign': 'bottom',
-            'text-halign': 'center',
-            'text-margin-y': 4,
-            'width': 36,
-            'height': 36,
-            'border-width': 2,
-            'border-color': 'data(color)',
-            'border-opacity': 0.5,
-            'text-wrap': 'wrap',
-            'text-max-width': '110px',
-            'font-family': '"Noto Sans SC", "Microsoft YaHei", "SimHei", "PingFang SC", Inter, sans-serif',
-          },
-        },
-        { selector: 'node[entity_type="THEOREM"]', style: { 'shape': 'round-rectangle', 'width': 44, 'height': 36 } },
-        { selector: 'node[entity_type="DEFINITION"]', style: { 'shape': 'round-rectangle' } },
-        { selector: 'node[entity_type="AXIOM"]', style: { 'shape': 'diamond' } },
-        { selector: 'node[entity_type="EXAMPLE"]', style: { 'shape': 'ellipse', 'width': 42, 'height': 36 } },
-        {
-          selector: 'node[entity_type="LEMMA"]',
-          style: { 'shape': 'round-rectangle', 'width': 40, 'height': 36, 'border-style': 'dashed' },
-        },
-        {
-          selector: 'edge',
-          style: {
-            'width': 1.75, 'line-color': '#52525b', 'target-arrow-color': '#52525b',
-            'target-arrow-shape': 'triangle', 'curve-style': 'bezier',
-            'label': 'data(label)', 'font-size': '9px',             'color': '#c4b5fd', 'text-rotation': 'autorotate',
-            'text-background-color': '#0b0e14', 'text-background-opacity': 0.7, 'text-background-padding': '2px',
-          },
-        },
-        { selector: 'edge[relation_type="DEPENDS_ON"]', style: { 'line-color': '#60a5fa', 'target-arrow-color': '#60a5fa' } },
-        {
-          selector: 'edge[relation_type="GENERALIZES"]',
-          style: { 'line-color': '#a78bfa', 'target-arrow-color': '#a78bfa', 'line-style': 'dashed' },
-        },
-        {
-          selector: 'edge[relation_type="PROVES"]',
-          style: { 'line-color': '#34d399', 'target-arrow-color': '#34d399', 'line-style': 'dotted', 'width': 2 },
-        },
-        {
-          selector: 'edge[relation_type="BUILDS_ON"]',
-          style: { 'line-color': '#fbbf24', 'target-arrow-color': '#fbbf24', 'line-style': 'dashed' },
-        },
-        {
-          selector: 'edge[relation_type="EXAMPLE_OF"]',
-          style: { 'line-color': '#fb923c', 'target-arrow-color': '#fb923c', 'line-style': 'dotted' },
-        },
-        {
-          selector: ':selected',
-          style: {
-            'border-color': '#818cf8', 'border-width': 3, 'border-opacity': 1,
-            'shadow-blur': 12, 'shadow-color': '#818cf8', 'shadow-opacity': 0.4,
-          } as any,
-        },
-      ],
+      style: buildCyStyle(readThemePalette()),
       // Initial scatter — force simulation will take over
       layout: { name: 'random' },
     })
 
-    graphData.elements.nodes.forEach((n) => cy.add({ group: 'nodes', data: n.data }))
+    graphData.elements.nodes.forEach((n) => {
+      const key = entityKeyOf(n.data.entity_type)
+      cy.add({
+        group: 'nodes',
+        data: {
+          ...n.data,
+          entity_key: key,
+          label: `${ENTITY_META[key].abbr} · ${n.data.name}`,
+        },
+      })
+    })
     graphData.elements.edges.forEach((e) => cy.add({
       group: 'edges',
       data: { ...e.data, label: getRelationLabel(e.data.relation_type) },
     }))
+
+    // Below 28px, shapes collapse into dots: switch to a uniform LOD.
+    cy.on('zoom', () => {
+      const low = cy.zoom() < 0.78
+      cy.batch(() => cy.nodes().toggleClass('lod-low', low))
+    })
 
     // Tap → select node
     cy.on('tap', 'node', (evt) => selectNode(evt.target.id()))
@@ -476,6 +458,23 @@ export default function GraphView() {
         </div>
       </div>
 
+      <GraphA11yPanel
+        graphData={graphData}
+        typeFilter={typeFilter}
+        setTypeFilter={setTypeFilter}
+        listMode={listMode}
+        setListMode={setListMode}
+        selectedNodeId={selectedNodeId}
+        onSelect={(id) => {
+          selectNode(id)
+          const cy = cyRef.current
+          if (cy && cy.$id(id).length) {
+            cy.$(':selected').unselect()
+            cy.$id(id).select()
+            cy.animate({ center: { eles: cy.$id(id) } }, { duration: 150 })
+          }
+        }}
+      />
       <div ref={containerRef} className="cytoscape-container" />
     </div>
   )
