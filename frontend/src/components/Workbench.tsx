@@ -47,6 +47,7 @@ export default function Workbench() {
   const abortRef = useRef<AbortController | null>(null)
   const hardTimer = useRef<number | null>(null)
   const ocrWorkerRef = useRef<{ terminate: () => Promise<unknown> } | null>(null)
+  const taskIdRef = useRef<string | null>(null)
   const editorFocusRef = useRef<HTMLDivElement>(null)
 
   const total = pages.length
@@ -98,23 +99,29 @@ export default function Workbench() {
   }, [undo])
 
   const cancelRunningTask = useCallback(() => {
+    if (taskIdRef.current) {
+      void api.cancelTask(taskIdRef.current).catch(() => {})
+      taskIdRef.current = null
+    }
     abortRef.current?.abort()
     ocrWorkerRef.current?.terminate()
     ocrWorkerRef.current = null
     if (hardTimer.current !== null) window.clearTimeout(hardTimer.current)
     stop()
-    setMsg(t('workbench.cancelled'))
-    setStatus(t('workbench.cancelled'))
-  }, [stop, setStatus, t])
+    setMsg('请求已取消，服务端将在写入前停止')
+    setStatus('请求已取消，服务端将在写入前停止')
+  }, [stop, setStatus])
 
   const analyze = async () => {
     if (!bookId || !total || task.active) return
     const controller = new AbortController()
     abortRef.current = controller
+    const taskId = crypto.randomUUID()
+    taskIdRef.current = taskId
     start('extract', `${t('workbench.analyzing')} p${pageNo}–p${endPage}`)
     hardTimer.current = window.setTimeout(() => controller.abort(), 120000)
     try {
-      const r = await api.extractWindow(bookId, pageNo, endPage, controller.signal)
+      const r = await api.extractWindow(bookId, pageNo, endPage, controller.signal, taskId)
       await loadCandidates()
       setTab('candidates')
       setDropped(r.relations_dropped ?? 0)
@@ -132,6 +139,7 @@ export default function Workbench() {
     } finally {
       if (hardTimer.current !== null) window.clearTimeout(hardTimer.current)
       abortRef.current = null
+      taskIdRef.current = null
       stop()
     }
   }

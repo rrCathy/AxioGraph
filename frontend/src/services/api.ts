@@ -120,10 +120,14 @@ export async function submitOcr(bookId: string, pageNo: number, text: string, co
   return res.json()
 }
 
-export async function extractWindow(bookId: string, start: number, end: number, signal?: AbortSignal) {
+export async function extractWindow(bookId: string, start: number, end: number,
+                                    signal?: AbortSignal, taskId?: string) {
   const res = await fetch(`${BASE}/books/${bookId}/extract`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      ...(taskId ? { 'X-Task-Id': taskId } : {}),
+    },
     body: JSON.stringify({ start, end }),
     signal,
   })
