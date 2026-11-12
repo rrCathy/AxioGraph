@@ -1,0 +1,164 @@
+/* AxioGraph design tokens — "The collation desk" (darkroom) / "Facing pages" (paper).
+   Single source of truth. Components must never contain literal hex values. */
+
+:root,
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  --ag-bg-0: #090B0D;
+  --ag-bg-1: #0E1013;
+  --ag-bg-2: #14171B;
+  --ag-bg-3: #1B1F24;
+  --ag-bg-4: #23272E;
+  --ag-bg-5: #2C3139;
+  --ag-page-mat: #3A352D;
+  --ag-paper: #F4F0E6;
+  --ag-line-paper: #CFC7B4;
+  --ag-page-filter: sepia(.07) saturate(.9) brightness(.97);
+  --ag-page-blend: multiply;
+
+  --ag-ink-1: #E8E4DB;
+  --ag-ink-2: #C2BFB6;
+  --ag-ink-3: #8C8A82;
+  --ag-ink-4: #6A6962;
+
+  --ag-line-1: #24282F;
+  --ag-line-2: #343A43;
+  --ag-line-3: #5E6875;
+
+  --ag-cinnabar: #E0664C;
+  --ag-cinnabar-hover: #EC7A61;
+  --ag-cinnabar-press: #C5533C;
+  --ag-on-cinnabar: #14100E;
+  --ag-danger: #DC7A91;
+
+  --ag-entity-def: #7C9EE8;
+  --ag-entity-the: #B98BE0;
+  --ag-entity-lem: #5FC4C0;
+  --ag-entity-ex: #9CC46A;
+  --ag-entity-pro: #E08BA8;
+  --ag-entity-cor: #D9AC63;
+  --ag-entity-def-bg: #202734;
+  --ag-entity-the-bg: #282533;
+  --ag-entity-lem-bg: #1D2C2F;
+  --ag-entity-ex-bg: #242C24;
+  --ag-entity-pro-bg: #2C252C;
+  --ag-entity-cor-bg: #2C2924;
+
+  --ag-status-pending: #8C8A82;
+  --ag-status-extracted: #8FB0CE;
+  --ag-status-ocr: #D2A24E;
+  --ag-status-reviewed: #6FB3A6;
+  --ag-status-confirmed: #7FB069;
+  --ag-status-bad: #DC7A91;
+  --ag-status-merged: #B39CD6;
+
+  --ag-selection: rgba(224, 102, 76, .30);
+  --ag-quote-bg: rgba(224, 102, 76, .14);
+  --ag-quote-rail: #E0664C;
+  --ag-math-ink: var(--ag-ink-1);
+  --ag-math-error: #D2A24E;
+  --ag-grid: rgba(140, 138, 130, .045);
+
+  --ag-focus-inner: #E0664C;
+  --ag-focus-outer: #E8E4DB;
+  --ag-focus-offset: 2px;
+  --ag-disabled-bg: #2C3139;
+  --ag-disabled-ink: #6A6962;
+  --ag-disabled-line: #24282F;
+
+  --ag-radius-page: 2px;
+  --ag-radius-body: 2px;
+  --ag-radius-btn: 6px;
+  --ag-radius-card: 8px;
+  --ag-radius-overlay: 10px;
+  --ag-radius-badge: 4px;
+  --ag-radius-dot: 9999px;
+
+  --ag-topbar-h: 52px;
+  --ag-tab-h: 40px;
+  --ag-gutter: 24px;
+  --ag-well-pad: 20px;
+  --ag-mat-pad: 12px;
+  --ag-page-max: 720px;
+  --ag-right-x: 28px;
+  --ag-right-y: 24px;
+  --ag-measure: 38em;
+  --ag-card-pad: 12px;
+  --ag-card-gap: 8px;
+  --ag-inspector-w: 320px;
+
+  --ag-theme-dur: 150ms;
+  --ag-motion: var(--ag-theme-dur);
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+
+  --ag-bg-0: #DAD5C8;
+  --ag-bg-1: #E9E5DB;
+  --ag-bg-2: #F5F2E9;
+  --ag-bg-3: #FBF9F3;
+  --ag-bg-4: #FFFFFF;
+  --ag-bg-5: #EDE8DC;
+  --ag-page-mat: #C9C1AF;
+  --ag-paper: #FFFFFF;
+  --ag-line-paper: #C9C1AF;
+  --ag-page-filter: none;
+  --ag-page-blend: normal;
+
+  --ag-ink-1: #23262A;
+  --ag-ink-2: #3F444B;
+  --ag-ink-3: #6B6A63;
+  --ag-ink-4: #8E8B82;
+
+  --ag-line-1: #DAD4C6;
+  --ag-line-2: #C6BFAE;
+  --ag-line-3: #9C9584;
+
+  --ag-cinnabar: #B84A32;
+  --ag-cinnabar-hover: #A63E28;
+  --ag-cinnabar-press: #8E3120;
+  --ag-on-cinnabar: #FFFFFF;
+  --ag-danger: #93304B;
+
+  --ag-entity-def: #355B9E;
+  --ag-entity-the: #73439F;
+  --ag-entity-lem: #247270;
+  --ag-entity-ex: #4C7129;
+  --ag-entity-pro: #9C3A60;
+  --ag-entity-cor: #835C1C;
+  --ag-entity-def-bg: #DEE0E0;
+  --ag-entity-the-bg: #E5DDE0;
+  --ag-entity-lem-bg: #DCE3DA;
+  --ag-entity-ex-bg: #E1E3D2;
+  --ag-entity-pro-bg: #EADCD9;
+  --ag-entity-cor-bg: #E7E0D0;
+
+  --ag-status-pending: #6B6A63;
+  --ag-status-extracted: #3E6285;
+  --ag-status-ocr: #856017;
+  --ag-status-reviewed: #2B6E62;
+  --ag-status-confirmed: #3A642E;
+  --ag-status-bad: #93304B;
+  --ag-status-merged: #61438E;
+
+  --ag-selection: rgba(184, 74, 50, .22);
+  --ag-quote-bg: rgba(184, 74, 50, .10);
+  --ag-quote-rail: #B84A32;
+  --ag-math-ink: var(--ag-ink-1);
+  --ag-math-error: #856017;
+  --ag-grid: rgba(107, 106, 99, .06);
+
+  --ag-focus-inner: #B84A32;
+  --ag-focus-outer: #14100E;
+  --ag-disabled-bg: #EDE8DC;
+  --ag-disabled-ink: #8E8B82;
+  --ag-disabled-line: #DAD4C6;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root, [data-theme="dark"], [data-theme="light"] {
+    --ag-motion: 0ms;
+  }
+}

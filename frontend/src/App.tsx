@@ -5,64 +5,74 @@ import GraphView from './components/GraphView'
 import NodeDetail from './components/NodeDetail'
 import ChatPanel from './components/ChatPanel'
 import Workbench from './components/Workbench'
+import EmptyState from './components/ui/EmptyState'
 import { useAppStore } from './stores/appStore'
 import { useI18n } from './i18n/useI18n'
+import { useTheme } from './theme/useTheme'
+import type { ThemeMode } from './theme/theme'
 
 type Tab = 'workbench' | 'books' | 'graph' | 'chat'
 
 export default function App() {
   const { selectedNodeId, selectedBookId, books } = useAppStore()
   const { t, lang, setLang } = useI18n()
+  const { mode, setMode } = useTheme()
   const [tab, setTab] = useState<Tab>('workbench')
 
   const selectedBook = books.find((b) => b.id === selectedBookId)
 
   return (
     <Layout>
-      <div className="flex flex-col h-full">
-        {/* ─── Header ──────────────────────────────────── */}
-        <header className="h-12 shrink-0 bg-surface-raised border-b border-border-subtle flex items-center px-4 gap-4">
+      <div className="flex flex-col h-full min-h-0">
+        <header className="h-topbar shrink-0 bg-ag-bg1 border-b border-ag-line1 flex items-center px-4 gap-4">
           <div className="flex items-center gap-2.5">
-            <span className="text-lg">{'\u29E1'}</span>
-            <span className="font-semibold text-text-primary tracking-tight">{t('app.title')}</span>
-            <span className="text-2xs text-text-muted bg-surface-overlay px-1.5 py-0.5 rounded">
+            <span className="text-h2 text-ag-cinnabar" aria-hidden="true">◇</span>
+            <span className="font-medium text-body text-ag-ink1 tracking-tight">{t('app.title')}</span>
+            <span className="text-caption text-ag-ink3 bg-ag-bg2 px-1.5 py-0.5 rounded-badge ag-mono">
               {t('app.subtitle')}
             </span>
           </div>
 
-          {/* Separator */}
-          <div className="w-px h-5 bg-border-medium" />
+          <div className="w-px h-5 bg-ag-line2" />
 
-          {/* Tabs */}
-          <nav className="flex items-center gap-0.5">
-            <TabBtn active={tab === 'workbench'} onClick={() => setTab('workbench')} icon="\u{1F4C4}">
+          <nav className="flex items-center gap-6 h-tab" role="tablist" aria-label="主导航">
+            <TabBtn active={tab === 'workbench'} onClick={() => setTab('workbench')}>
               {t('app.tabWorkbench')}
             </TabBtn>
-            <TabBtn active={tab === 'books'} onClick={() => setTab('books')} icon="\u{1F4DA}">
+            <TabBtn active={tab === 'books'} onClick={() => setTab('books')}>
               {t('app.tabBooks')}
             </TabBtn>
-            <TabBtn active={tab === 'graph'} onClick={() => setTab('graph')} icon="\u{26F3}">
+            <TabBtn active={tab === 'graph'} onClick={() => setTab('graph')}>
               {t('app.tabGraph')}
             </TabBtn>
-            <TabBtn active={tab === 'chat'} onClick={() => setTab('chat')} icon="\u{1F4AC}">
+            <TabBtn active={tab === 'chat'} onClick={() => setTab('chat')}>
               {t('app.tabChat')}
             </TabBtn>
           </nav>
 
-          {/* Book context + Language toggle */}
           <div className="ml-auto flex items-center gap-3">
             {tab === 'graph' && selectedBook && (
-              <div className="flex items-center gap-2 text-xs text-text-secondary">
-                <span className="w-1.5 h-1.5 rounded-full bg-accent-green" />
-                <span className="text-text-muted">{t('app.current')}</span>
-                <span className="text-text-primary font-medium truncate max-w-[200px]">
+              <div className="flex items-center gap-2 text-caption text-ag-ink2">
+                <span className="w-1.5 h-1.5 rounded-dot bg-ag-statusConfirmed" />
+                <span className="text-ag-ink3">{t('app.current')}</span>
+                <span className="text-ag-ink1 font-medium truncate max-w-[200px]">
                   {selectedBook.title}
                 </span>
               </div>
             )}
+            <select
+              value={mode}
+              onChange={(e) => setMode(e.target.value as ThemeMode)}
+              aria-label="界面主题"
+              className="ag-focus-ring text-caption px-2 py-1 rounded-btn bg-ag-bg2 border border-ag-line2 text-ag-ink2"
+            >
+              <option value="dark">暗房</option>
+              <option value="light">纸本</option>
+              <option value="system">跟随系统</option>
+            </select>
             <button
               onClick={() => setLang(lang === 'zh' ? 'en' : 'zh')}
-              className="px-2.5 py-1 text-xs font-medium rounded-md bg-surface-overlay border border-border-subtle text-text-muted hover:text-text-primary hover:bg-surface-hover transition-colors shrink-0"
+              className="ag-focus-ring px-2.5 py-1 text-caption rounded-btn bg-ag-bg2 border border-ag-line2 text-ag-ink3 hover:text-ag-ink1 hover:bg-ag-bg4 transition-colors"
               title={lang === 'zh' ? 'Switch to English' : '切换到中文'}
             >
               {t('app.langBtn')}
@@ -70,8 +80,7 @@ export default function App() {
           </div>
         </header>
 
-        {/* ─── Content ─────────────────────────────────── */}
-        <div className="flex-1 flex overflow-hidden">
+        <div className="flex-1 flex min-h-0 overflow-hidden">
           {tab === 'workbench' && (
             <div className="flex-1 min-w-0">
               <Workbench />
@@ -82,12 +91,10 @@ export default function App() {
             <div className="flex-1 overflow-auto">
               <div className="max-w-3xl mx-auto p-6">
                 <div className="mb-8">
-                  <h1 className="text-2xl font-bold text-text-primary tracking-tight">
+                  <h1 className="text-display font-medium text-ag-ink1 tracking-tight">
                     {t('books.title')}
                   </h1>
-                  <p className="text-sm text-text-muted mt-1">
-                    {t('books.subtitle')}
-                  </p>
+                  <p className="text-body text-ag-ink3 mt-1">{t('books.subtitle')}</p>
                 </div>
                 <UploadBook />
               </div>
@@ -95,16 +102,13 @@ export default function App() {
           )}
 
           {tab === 'graph' && (
-            <div className="flex-1 flex overflow-hidden">
-              {/* Main graph area */}
-              <div className="flex-1 relative">
+            <div className="flex-1 flex min-h-0">
+              <div className="flex-1 relative min-w-0">
                 <GraphView />
               </div>
-
-              {/* Right inspector panel */}
-              <div className="w-80 shrink-0 bg-surface-overlay border-l border-border-subtle overflow-auto flex flex-col">
-                <div className="px-4 py-2.5 border-b border-border-subtle shrink-0">
-                  <p className="text-xs font-medium text-text-muted uppercase tracking-wider">
+              <div className="w-inspector shrink-0 bg-ag-bg1 border-l border-ag-line1 flex flex-col">
+                <div className="px-4 py-2.5 border-b border-ag-line1 shrink-0">
+                  <p className="text-caption font-medium text-ag-ink3 ag-mono">
                     {t('app.inspector')}
                   </p>
                 </div>
@@ -112,21 +116,8 @@ export default function App() {
                   {selectedNodeId ? (
                     <NodeDetail nodeId={selectedNodeId} />
                   ) : (
-                    <div className="p-4 text-sm text-text-muted">
-                      <div className="text-center py-12">
-                        <p className="text-3xl mb-3 opacity-30">{'\u{1F50D}'}</p>
-                        <p className="text-text-secondary font-medium">{t('app.nodeInspector')}</p>
-                        <p className="text-xs text-text-dim mt-1.5 leading-relaxed whitespace-pre-line">
-                          {t('app.clickToView')}
-                        </p>
-                        <div className="mt-4 inline-flex items-center gap-1.5 text-2xs text-text-dim">
-                          <span className="inline-block w-2 h-2 rounded-full bg-accent-blue" />
-                          <span className="inline-block w-2 h-2 rounded-full bg-accent-green" />
-                          <span className="inline-block w-2 h-2 rounded-full bg-accent-purple" />
-                          <span className="inline-block w-2 h-2 rounded-full bg-accent-amber" />
-                          <span className="inline-block w-2 h-2 rounded-full bg-accent-cyan" />
-                        </div>
-                      </div>
+                    <div className="p-4">
+                      <EmptyState>{t('app.clickToView')}</EmptyState>
                     </div>
                   )}
                 </div>
@@ -135,7 +126,7 @@ export default function App() {
           )}
 
           {tab === 'chat' && (
-            <div className="flex-1">
+            <div className="flex-1 min-h-0">
               <ChatPanel />
             </div>
           )}
@@ -146,26 +137,23 @@ export default function App() {
 }
 
 function TabBtn({
-  active,
-  onClick,
-  icon,
-  children,
+  active, onClick, children,
 }: {
   active: boolean
   onClick: () => void
-  icon: string
   children: React.ReactNode
 }) {
   return (
     <button
+      role="tab"
+      aria-selected={active}
       onClick={onClick}
-      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm transition-all duration-150
+      className={`ag-focus-ring h-full px-1 text-body border-b-2 transition-colors
         ${active
-          ? 'bg-surface-hover text-text-primary font-medium'
-          : 'text-text-secondary hover:text-text-primary hover:bg-surface-overlay'}`}
+          ? 'border-ag-cinnabar text-ag-ink1 font-medium'
+          : 'border-transparent text-ag-ink3 hover:text-ag-ink1'}`}
     >
-      <span className="text-base">{icon}</span>
-      <span>{children}</span>
+      {children}
     </button>
   )
 }
