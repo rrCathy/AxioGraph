@@ -27,8 +27,25 @@
 | D 公式节点 | 有文本层页：公式块 + 编号 `(1.x)` → FORMULA 候选；扫描页：检测"整页位图 + 低文本质量"→ 标 `needs_vision` 显式提示 | 零新依赖 | 公式不再丢；编号可占位 | **转 LaTeX / 理解公式语义做不到的部分必须标"未识别"，不编造** |
 | E 图像级重识别 | 视觉模型或本地公式 OCR | FreeLLMAPI（限流）/ GB 级模型 | 才可能真正拿到 p24 的三个公式 | 本机条件暂不具备，列为后续 |
 
+## 实施结果（A+B+C+D 已落地，2026-11-12 晚）
+
+用户一句话授权「做」后完成，验收脚本 `scripts/verify_layout.py` 可重跑。
+
+| 页 | 改造前 | 改造后（真跑数字） |
+|----|--------|--------------------|
+| 代数拓扑 p3 | 1333 字符 / **109 行平铺碎片** | **3 个类型化块**：H1 `Contents` + 目录表格（含页码）+ 1 个 NOISE 页码；`layout_text` 以 `# Contents` 开头 |
+| 代数拓扑 p14 | 1476 字符 / 58 行，公式与图内标注混在一起 | 9 个块：H1 + 5 正文 + 1 FORMULA + 1 FIGURE + 1 NOISE；**3 个示意图框**（bbox 精确）、图内标注 **0 条泄漏进 LLM 输入**；生成 1 个 FORMULA 候选 |
+| 简明复分析 p24 | 1035 字符 OCR 乱码，公式全丢 | 13 个块；`kind=scanned_ocr` / `needs_vision=true`；编号 (1.5)(1.6)(1.8) + 名字配对 `Green 公式→(1.6)`、`Gauss 公式→(1.8)`；生成 **4 个 FORMULA 候选**，含 `Stokes 公式 (编号未识别)` 与 `待补录公式 (1.5)`，公式本体明确标注未恢复、不编造 |
+
+端到端 `POST /extract p24-24`：**7 个 pending 候选**（LLM 抽的 Green/Stokes/Gauss 三个 THEOREM + 4 个结构化 FORMULA），全部交人工确认。LLM 429 时结构化候选不受影响（已加异常隔离）。
+
+- 新增 `backend/page_layout.py`：`pymupdf4llm.to_markdown(use_ocr=False)` 出层级/表格，PyMuPDF span 行给位置与阅读顺序，`get_image_info()` 线段 bbox 连通分量聚类出示意图框。
+- `pages` 增列 `layout_json / layout_text / page_kind / needs_vision`，按需生成并缓存；`window_text()` 改喂 `[H]/[TABLE]/[P]/[FORMULA]` 结构块，FIGURE 默认排除（选择性提取）。
+- 前端右侧新增「版面」栏：块统计、页类型徽标、扫描页警示、结构化/原始文本切换、重排版面。
+- 依赖：`pymupdf>=1.28` + `pymupdf4llm>=1.28,<2`（2.x 是空壳包，代码已并入 pymupdf 2.x；后端保持 1.28 线）。
+
+**仍未做（诚实边界）**：E 图像级重识别——p24 公式本体仍需视觉模型或本地公式 OCR，当前只给占位节点并提示用户补录，不生成假 LaTeX。
+
 ## 待用户拍板
 
-- 是否按 **A+B+C+D**（纯 Python、离线、可验证）改造页文本管道？这属于架构级改动，未获一句话授权前不动代码。
-- E 是否列为本期目标，还是先接受"扫描页公式标未识别 + 人工/视觉按钮补录"。
-- 是否允许 `pip install pymupdf4llm` 到后端解释器（Bash python 已有，scoop python 缺）。
+- 是否把 E 列为本期目标，还是先接受"扫描页公式标未识别 + 人工/视觉按钮补录"。

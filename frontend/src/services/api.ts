@@ -87,6 +87,17 @@ export async function getPage(bookId: string, pageNo: number) {
   return res.json()
 }
 
+export async function getPageLayout(bookId: string, pageNo: number, includeFigure = false) {
+  const res = await fetch(`${BASE}/books/${bookId}/pages/${pageNo}/layout?include_figure=${includeFigure}`)
+  if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`)
+  return res.json()
+}
+
+export async function relayout(bookId: string) {
+  const res = await fetch(`${BASE}/books/${bookId}/relayout`, { method: 'POST' })
+  return res.json()
+}
+
 export async function savePageText(bookId: string, pageNo: number, text: string) {
   const res = await fetch(`${BASE}/books/${bookId}/pages/${pageNo}`, {
     method: 'PUT',

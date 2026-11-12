@@ -20,6 +20,11 @@ import page_service as ps
 
 log = logging.getLogger("axiograph.extract")
 
+UNREADABLE_FORMULA_NOTE = (
+    "公式本体未能从文本层恢复：此页是扫描图像 + 低质量 OCR 文本层。"
+    "请用「视觉识别」重做或人工录入后再确认，系统不会编造公式内容。"
+)
+
 # Cooperative cancellation for long extraction calls. AbortController on the
 # client only kills the HTTP request; this flag stops the server from writing.
 _cancel_events: dict[str, threading.Event] = {}
@@ -136,7 +141,9 @@ def _is_substantial_node(name: str, content) -> bool:
                 return False
     return True
 
-PAGE_PROMPT = """你是数学文献分析专家。下面是从 PDF 第 {start}-{end} 页提取的文本，每段以 [pN] 开头标记页码。
+PAGE_PROMPT = """你是数学文献分析专家。下面是从 PDF 第 {start}-{end} 页按版面重建的**结构化文本**，每段以 [pN] 开头标记页码。
+文本按块标注类型：`#` 标题（层级用 # 个数）、[TABLE] 表格、[P] 正文、[FORMULA] 独立公式行。
+**示意图内的标注已被排除**，不会出现在输入里，不要凭空补回。
 请提取其中有明确定义、定理陈述或证明的数学实体，作为**候选**供人工确认。原文可能有识别错误，宁可少提也不要编造。
 
 规则：
@@ -147,6 +154,8 @@ PAGE_PROMPT = """你是数学文献分析专家。下面是从 PDF 第 {start}-{
 5. relations：该实体依赖/证明/例证的其他概念，用 {{"target": "概念名", "type": "DEPENDS_ON|PROVES|GENERALIZES|EXAMPLE_OF|BUILDS_ON", "note": "简短理由"}}。没有就给空数组。
 6. 目录页、前言、页眉页脚、习题答案等无实质数学内容的文本，输出 []。
 7. 本窗口最多提取 8 个实体，优先重要的定义与定理。
+8. **不要输出公式实体**：[FORMULA] 块由系统单独生成候选节点，交人工确认；你只需在 relations 里引用它们的概念名。
+9. 标题层级（#）可用来判断实体所属章节，但不要把标题本身当实体。
 
 只输出严格 JSON 数组，格式：
 [
@@ -194,6 +203,68 @@ def _parse_items(response: str) -> tuple[list[dict], bool]:
     return [], False
 
 
+def _formula_candidates(conn, book_id: str, start: int, end: int) -> list[dict]:
+    """Turn typed FORMULA blocks into pending nodes for human confirmation.
+
+    On scanned/OCR pages the formula body is unrecoverable from the text
+    layer, so we emit an explicit 'needs entry' placeholder per equation
+    number instead of inventing LaTeX. Re-running a window never duplicates.
+    """
+    saved: list[dict] = []
+    for pno in range(start, end + 1):
+        layout = ps.ensure_layout(book_id, pno)
+        if not layout:
+            continue
+        headings = [b["text"][:60] for b in layout["blocks"] if b["type"] == "H"]
+        context = headings[-1] + " · " if headings else ""
+        formulas = [b for b in layout["blocks"] if b["type"] == "FORMULA"]
+        if layout["needs_vision"]:
+            # Names come from the page's own reading order (built in
+            # page_layout); the formula BODY is never guessed.
+            name_map = layout.get("formula_name_map") or {}
+            numbers = layout.get("formula_numbers") or [f"p{pno}"]
+            used_names = set()
+            entries = []
+            for n in numbers:
+                label = name_map.get(n)
+                if label:
+                    used_names.add(label)
+                name = (f"{label} {n} (p{pno})" if label
+                        else f"待补录公式 {n} (p{pno})" if n.startswith("(")
+                        else f"待补录公式 (p{pno})")
+                entries.append((name, UNREADABLE_FORMULA_NOTE))
+            # A named formula whose number the OCR layer mangled entirely.
+            for label in layout.get("named_formulas") or []:
+                if label not in used_names:
+                    entries.append((f"{label} (编号未识别, p{pno})",
+                                    UNREADABLE_FORMULA_NOTE))
+        else:
+            entries = [
+                (f"{context}公式 {i} (p{pno})", b["text"])
+                for i, b in enumerate(formulas, 1)
+            ]
+        for name, content in entries:
+            dup = conn.execute(
+                """SELECT 1 FROM candidates WHERE book_id = ? AND name = ?
+                   AND page_start = ? AND page_end = ? AND entity_type = 'FORMULA'
+                   AND status = 'pending' LIMIT 1""",
+                (book_id, name, pno, pno),
+            ).fetchone()
+            if dup:
+                continue
+            cid = str(uuid.uuid4())
+            conn.execute(
+                """INSERT INTO candidates
+                   (id, book_id, page_start, page_end, entity_type, name,
+                    content, quote, relations_json, status)
+                   VALUES (?, ?, ?, ?, 'FORMULA', ?, ?, ?, '[]', 'pending')""",
+                (cid, book_id, pno, pno, name, content, content[:400]),
+            )
+            saved.append({"id": cid, "name": name, "type": "FORMULA",
+                          "quote": content[:120], "continues": False})
+    return saved
+
+
 def extract_window(book_id: str, start: int, end: int,
                    task_id: str | None = None, *,
                    register: bool = True, clear: bool = True) -> dict:
@@ -219,7 +290,13 @@ def extract_window(book_id: str, start: int, end: int,
     items: list[dict] = []
     parsed_ok = False
     for attempt in range(2):
-        response = get_llm("extraction").chat(messages, temperature=0.1, max_tokens=4096)
+        try:
+            response = get_llm("extraction").chat(messages, temperature=0.1, max_tokens=4096)
+        except Exception as e:
+            # A rate-limited / offline model must not block structural
+            # candidates (formulas) that need no LLM at all.
+            log.warning("extraction LLM failed (attempt %d/2): %s", attempt + 1, str(e)[:160])
+            continue
         items, parsed_ok = _parse_items(response)
         if parsed_ok:
             break
@@ -261,6 +338,9 @@ def extract_window(book_id: str, start: int, end: int,
                       "type": str(entity.get("type", "CONCEPT")).upper(),
                       "quote": str(entity.get("quote", ""))[:120],
                       "continues": bool(entity.get("continues", False))})
+    # Formulas are structural artifacts, not LLM guesses: they become pending
+    # nodes in the same review queue even when the model returns [].
+    saved.extend(_formula_candidates(conn, book_id, start, end))
     conn.commit()
     conn.close()
     if clear:

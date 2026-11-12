@@ -144,6 +144,12 @@ def init_db():
         ]),
         ("graph_edges", [("review_status", "TEXT DEFAULT 'legacy'")]),
         ("candidates", [("dropped_relations_json", "TEXT DEFAULT '[]'")]),
+        ("pages", [
+            ("layout_json", "TEXT"),
+            ("layout_text", "TEXT"),
+            ("page_kind", "TEXT DEFAULT 'text_layer'"),
+            ("needs_vision", "INTEGER DEFAULT 0"),
+        ]),
     ]:
         for col, col_type in cols:
             try:

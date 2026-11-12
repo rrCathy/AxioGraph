@@ -87,6 +87,24 @@ def accept_ocr(book_id: str, page_no: int, body: OcrResult):
     return {"ok": True, "status": status, "needs_manual": not usable}
 
 
+@router.get("/{book_id}/pages/{page_no}/layout")
+def get_page_layout(book_id: str, page_no: int, include_figure: bool = False):
+    """Typed layout blocks (heading/table/formula/figure) with bboxes."""
+    layout = ps.ensure_layout(book_id, page_no)
+    if layout is None:
+        raise HTTPException(404, "Page not found or layout unavailable")
+    return {**layout,
+            "layout_text": ps.render_layout_text(layout, include_figure)}
+
+
+@router.post("/{book_id}/relayout")
+def relayout(book_id: str):
+    """Discard cached layouts so the next read re-derives them from the PDF."""
+    _require_book(book_id)
+    ps.clear_layout(book_id)
+    return {"ok": True}
+
+
 @router.post("/{book_id}/pages/{page_no}/vision-ocr")
 def vision_ocr(book_id: str, page_no: int,
                x_task_id: str | None = Header(default=None)):

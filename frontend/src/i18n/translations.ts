@@ -99,6 +99,11 @@ export const t = {
       structClose: '关闭', structAddRow: '补一条',
       structParseDone: '目录页解析完成：{n} 条', structSaved: '结构已保存',
       structDetectDone: '识别完成：{n} 条目录', structConfirmNoToc: '没有可入图的目录条目（需要能解析出 PDF 页码）',
+      layoutBar: '版面', layoutStructured: '结构化', layoutRaw: '原始文本',
+      layoutRelayout: '重排版面', layoutFigures: '图内标注已排除',
+      layoutKindText: '文本层', layoutKindScan: '扫描 OCR',
+      layoutNeedsVision: '此页为扫描图 + 低质量文本层，公式需视觉识别或人工录入',
+      layoutCounts: '标题 {h} · 表 {t} · 正文 {p} · 公式 {f} · 图 {g}',
     },
   },
   en: {
@@ -203,6 +208,11 @@ export const t = {
       structClose: 'Close', structAddRow: 'Add row',
       structParseDone: 'TOC page parsed: {n} entries', structSaved: 'Structure saved',
       structDetectDone: 'Detected: {n} TOC entries', structConfirmNoToc: 'No TOC entries resolvable to PDF pages',
+      layoutBar: 'Layout', layoutStructured: 'Structured', layoutRaw: 'Raw text',
+      layoutRelayout: 'Rebuild layout', layoutFigures: 'figure labels excluded',
+      layoutKindText: 'Text layer', layoutKindScan: 'Scanned OCR',
+      layoutNeedsVision: 'Scanned page with poor text layer — formulas need vision OCR or manual entry',
+      layoutCounts: 'H {h} · table {t} · prose {p} · formula {f} · figure {g}',
     },
   },
 } as const

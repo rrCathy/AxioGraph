@@ -26,7 +26,7 @@ const TYPE_MAP: Record<string, EntityKey> = {
   DEFINITION: 'def', THEOREM: 'the', LEMMA: 'lem', EXAMPLE: 'ex',
   PROPOSITION: 'pro', COROLLARY: 'cor',
   AXIOM: 'def', PROOF: 'lem', CONCEPT: 'other',
-  CHAPTER: 'other',
+  CHAPTER: 'other', FORMULA: 'other',
 }
 
 export function entityKeyOf(type: string): EntityKey {

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import Button from '../ui/Button'
 import EmptyState from '../ui/EmptyState'
 import { EntityBadge } from '../ui/Badge'
-import type { ConfirmedNode, TextBlock } from '../../types'
+import type { ConfirmedNode, TextBlock, PageLayout } from '../../types'
 import type { LongTaskState } from '../../hooks/useLongTask'
 import { pageImageUrl } from '../../services/api'
 import { useI18n } from '../../i18n/useI18n'
@@ -28,6 +28,68 @@ export function QuoteStrip({ quote, onClear }: { quote: string; onClear: () => v
 }
 
 const SHEET_CHROME = 30 // page-sheet padding + border, both sides
+
+export function LayoutBar({
+  layout, structured, onToggle, onRelayout,
+}: {
+  layout?: PageLayout | null
+  structured: boolean
+  onToggle: (v: boolean) => void
+  onRelayout: () => void
+}) {
+  const { t } = useI18n()
+  if (!layout) return null
+  const c = layout.counts || {}
+  const counts = t('workbench.layoutCounts')
+    .replace('{h}', String(c.H ?? 0))
+    .replace('{t}', String(c.TABLE ?? 0))
+    .replace('{p}', String(c.P ?? 0))
+    .replace('{f}', String(c.FORMULA ?? 0))
+    .replace('{g}', String(c.FIGURE ?? 0))
+  const chip = 'ag-focus-ring px-2 py-0.5 text-micro rounded-btn border transition-colors'
+
+  return (
+    <div className="shrink-0 flex items-center gap-2 px-3 py-1.5 border-b border-ag-line1 bg-ag-bg2 flex-wrap">
+      <span className="text-caption text-ag-ink3">{t('workbench.layoutBar')}</span>
+      <span className="ag-mono text-micro text-ag-ink2">{counts}</span>
+      <span className={`text-micro px-1.5 py-0.5 rounded-badge border ${
+        layout.page_kind === 'text_layer'
+          ? 'border-ag-line2 text-ag-ink3'
+          : 'border-ag-statusOcr text-ag-statusOcr'}`}>
+        {layout.page_kind === 'text_layer'
+          ? t('workbench.layoutKindText')
+          : t('workbench.layoutKindScan')}
+      </span>
+      {(c.FIGURE ?? 0) > 0 && (
+        <span className="text-micro text-ag-ink3">{t('workbench.layoutFigures')}</span>
+      )}
+      <div className="ml-auto flex items-center gap-1">
+        <button
+          onClick={() => onToggle(true)}
+          aria-pressed={structured}
+          className={`${chip} ${structured ? 'border-ag-cinnabar text-ag-ink1 bg-ag-quoteBg' : 'border-transparent text-ag-ink3 hover:text-ag-ink1'}`}
+        >
+          {t('workbench.layoutStructured')}
+        </button>
+        <button
+          onClick={() => onToggle(false)}
+          aria-pressed={!structured}
+          className={`${chip} ${!structured ? 'border-ag-cinnabar text-ag-ink1 bg-ag-quoteBg' : 'border-transparent text-ag-ink3 hover:text-ag-ink1'}`}
+        >
+          {t('workbench.layoutRaw')}
+        </button>
+        <button onClick={onRelayout} className={`${chip} border-ag-line2 text-ag-ink3 hover:text-ag-ink1`}>
+          {t('workbench.layoutRelayout')}
+        </button>
+      </div>
+      {layout.needs_vision && (
+        <div className="w-full text-caption text-ag-statusOcr" role="status">
+          {t('workbench.layoutNeedsVision')}
+        </div>
+      )}
+    </div>
+  )
+}
 
 /** Full-page viewer: scroll + three zoom levels + quote overlay. */
 export function PageViewer({

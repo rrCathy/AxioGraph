@@ -81,6 +81,8 @@ def import_pages(book_id: str, filepath: str | Path) -> int:
              char_count = excluded.char_count,
              quality = excluded.quality,
              status = excluded.status,
+             layout_json = NULL,
+             layout_text = NULL,
              updated_at = CURRENT_TIMESTAMP""",
         rows,
     )
@@ -112,6 +114,12 @@ def get_page(book_id: str, page_no: int) -> dict | None:
         return None
     d = dict(row)
     d["blocks"] = json.loads(d.pop("blocks_json") or "[]")
+    layout = ensure_layout(book_id, page_no)
+    d.pop("layout_json", None)
+    d["layout"] = layout
+    d["layout_text"] = render_layout_text(layout) if layout else (d.get("text_corrected") or d.get("text_raw") or "")
+    d["page_kind"] = layout["page_kind"] if layout else "text_layer"
+    d["needs_vision"] = bool(layout["needs_vision"]) if layout else False
     d["text"] = d.get("text_corrected") or d.get("text_raw") or ""
     d["text_raw_present"] = bool(d.get("text_raw"))
     # PDF point dimensions, so the frontend can overlay block bboxes on the
@@ -127,6 +135,57 @@ def get_page(book_id: str, page_no: int) -> dict | None:
         except Exception:
             pass
     return d
+
+
+def ensure_layout(book_id: str, page_no: int) -> dict | None:
+    """Lazily build and cache the typed layout for one page. Layout is derived
+    from the PDF, so it never depends on a possibly-edited flat text dump."""
+    import page_layout as L  # local import: page_layout imports this module
+
+    conn = get_db()
+    row = conn.execute(
+        "SELECT layout_json FROM pages WHERE book_id = ? AND page_no = ?",
+        (book_id, page_no),
+    ).fetchone()
+    conn.close()
+    if not row:
+        return None
+    if row["layout_json"]:
+        try:
+            return json.loads(row["layout_json"])
+        except (ValueError, TypeError):
+            pass
+    try:
+        layout = L.build_layout(book_id, page_no)
+        layout_json, layout_text = L.to_storage(layout)
+    except Exception:
+        return None
+    conn = get_db()
+    conn.execute(
+        """UPDATE pages SET layout_json = ?, layout_text = ?, page_kind = ?,
+                            needs_vision = ?
+           WHERE book_id = ? AND page_no = ?""",
+        (layout_json, layout_text, layout["page_kind"], int(layout["needs_vision"]),
+         book_id, page_no),
+    )
+    conn.commit()
+    conn.close()
+    return layout
+
+
+def render_layout_text(layout: dict, include_figure: bool = False) -> str:
+    import page_layout as L
+    return L.render_layout_text(layout, include_figure)
+
+
+def clear_layout(book_id: str) -> None:
+    conn = get_db()
+    conn.execute(
+        "UPDATE pages SET layout_json = NULL, layout_text = NULL WHERE book_id = ?",
+        (book_id,),
+    )
+    conn.commit()
+    conn.close()
 
 
 def save_page_text(book_id: str, page_no: int, text: str,
@@ -159,13 +218,31 @@ def render_page(book_id: str, page_no: int, zoom: float = 1.3) -> tuple[bytes, i
 
 
 def window_text(book_id: str, start: int, end: int) -> str:
-    """Text of an inclusive page window, using corrected text when available."""
+    """Text of an inclusive page window as TYPED BLOCKS.
+
+    Structured layout is preferred: headings, tables, formulas and (excluded)
+    figure labels. Pages manually corrected by a human still win, because the
+    human's text is authoritative over any re-derivation.
+    """
     conn = get_db()
     rows = conn.execute(
-        """SELECT page_no, COALESCE(text_corrected, text_raw, '') AS text
+        """SELECT page_no, COALESCE(text_corrected, text_raw, '') AS text,
+                  text_corrected IS NOT NULL AS edited, layout_text
            FROM pages WHERE book_id = ? AND page_no BETWEEN ? AND ?
            ORDER BY page_no""",
         (book_id, start, end),
     ).fetchall()
     conn.close()
-    return "\n\n".join(f"[p{r['page_no']}] {r['text']}" for r in rows if r["text"].strip())
+
+    out = []
+    for r in rows:
+        if r["edited"]:
+            body = "[EDITED] " + r["text"]
+        elif r["layout_text"]:
+            body = r["layout_text"]
+        else:
+            layout = ensure_layout(book_id, r["page_no"])
+            body = render_layout_text(layout) if layout else r["text"]
+        if body.strip():
+            out.append(f"[p{r['page_no']}]\n{body}")
+    return "\n\n".join(out)

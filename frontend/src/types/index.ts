@@ -70,6 +70,28 @@ export interface TextBlock {
   text: string
 }
 
+export interface LayoutBlock {
+  type: 'H' | 'TABLE' | 'P' | 'FORMULA' | 'FIGURE' | 'NOISE'
+  text: string
+  level?: number
+  origin?: string
+  bbox?: [number, number, number, number]
+  font_size?: number
+}
+
+export interface PageLayout {
+  page_no: number
+  page_kind: 'text_layer' | 'scanned_ocr' | 'scanned_image' | 'low_quality_text'
+  needs_vision: boolean
+  text_quality: number
+  figure_boxes: number[][]
+  figure_labels: string[]
+  formula_numbers: string[]
+  blocks: LayoutBlock[]
+  counts: Record<string, number>
+  layout_text?: string
+}
+
 export interface PageDetail {
   book_id: string
   page_no: number
@@ -83,6 +105,10 @@ export interface PageDetail {
   ocr_confidence: number | null
   page_width?: number
   page_height?: number
+  layout?: PageLayout | null
+  layout_text?: string
+  page_kind?: string
+  needs_vision?: boolean
 }
 
 export interface Relation {

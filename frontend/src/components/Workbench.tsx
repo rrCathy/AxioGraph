@@ -10,7 +10,7 @@ import { EntityBadge, StatusBadge } from './ui/Badge'
 import PageTextEditor from './PageTextEditor'
 import { useLongTask } from '../hooks/useLongTask'
 import {
-  QuoteStrip, PageViewer, LongTaskStatus, UndoToast,
+  QuoteStrip, PageViewer, LayoutBar, LongTaskStatus, UndoToast,
   MergePreview, RelationNote, ConfirmedSummary,
 } from './workbench/WorkbenchPanels'
 import BookStructurePanel from './workbench/BookStructurePanel'
@@ -52,6 +52,7 @@ export default function Workbench() {
   const [autoRange, setAutoRange] = useState({ start: 1, end: 0 })
   const [autoWindowSize, setAutoWindowSize] = useState(2)
   const [autoChapters, setAutoChapters] = useState<TocItem[] | null>(null)
+  const [structuredText, setStructuredText] = useState(true)
 
   const { state: task, start, setPhase, stop, elapsedLabel } = useLongTask(75)
   const abortRef = useRef<AbortController | null>(null)
@@ -329,6 +330,18 @@ export default function Workbench() {
     await loadPage(); await loadPages()
     setMsg(t('workbench.saved'))
     setStatus(t('workbench.saved'))
+  }
+
+  const doRelayout = async () => {
+    if (!bookId) return
+    try {
+      await api.relayout(bookId)
+      await loadPage()
+      setMsg('版面已按 PDF 重排')
+      setStatus('版面已重排')
+    } catch (e) {
+      setAlert(String(e))
+    }
   }
 
   const pushUndo = (label: string, token: string | undefined, refresh: () => Promise<void>) => {
@@ -649,14 +662,22 @@ export default function Workbench() {
             </div>
             {tab === 'text' ? (
               page ? (
-                <div className="flex-1 min-h-0">
-                  <PageTextEditor
-                    text={page.text}
-                    onSave={(text) => void saveText(text)}
-                    onQuote={setQuoteDraft}
-                    onDirtyChange={setDirty}
-                    saving={false}
+                <div className="flex-1 min-h-0 flex flex-col">
+                  <LayoutBar
+                    layout={page.layout}
+                    structured={structuredText}
+                    onToggle={setStructuredText}
+                    onRelayout={() => void doRelayout()}
                   />
+                  <div className="flex-1 min-h-0">
+                    <PageTextEditor
+                      text={structuredText ? (page.layout_text || page.text) : page.text}
+                      onSave={(text) => void saveText(text)}
+                      onQuote={setQuoteDraft}
+                      onDirtyChange={setDirty}
+                      saving={false}
+                    />
+                  </div>
                 </div>
               ) : (
                 <div className="p-6"><EmptyState>{t('workbench.noPageText')}</EmptyState></div>
