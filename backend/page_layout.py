@@ -1,44 +1,26 @@
-"""Structured page layout: hierarchy, position, figure exclusion, formula blocks.
+"""Structured page layout — LOCAL recognition, no cloud calls.
 
-Replaces the flat text dump with typed blocks so the LLM receives the page's
-structure instead of a one-dimensional string. Uses PyMuPDF's official
-pymupdf4llm Markdown output (hierarchy / tables / picture text) plus
-PyMuPDF geometry (span bboxes, embedded-image boxes).
+Pipeline per page:
+  1. ONNX layout model (pymupdf.layout, bundled weights) predicts semantic
+     regions with bboxes: section-header / text / formula / picture / table.
+  2. If the page is a scanned bitmap (or the text layer is garbage), re-read
+     it with local RapidOCR instead of trusting the embedded OCR text layer.
+  3. Text lines (from the text layer or OCR) are assigned to regions by their
+     centre point, yielding typed blocks that carry a real page position.
 
-Nothing here guesses chapter structure by hand: Markdown markers and vector /
-image geometry are the only signals.
+The old pymupdf4llm Markdown path is kept ONLY as a fallback when the layout
+model is unavailable. Figure blocks are excluded from the LLM input by default.
 """
 import json
 import re
 
 import pymupdf as fitz
-import pymupdf4llm
 
 from page_service import pdf_path, text_quality
+import local_recognize as LR
 
-# Math-dense line signal (used only to TYPE a block, never to invent content).
-MATH_RE = re.compile(
-    r"[=≤≥≠∫∂∑∏≃≅∈→↦√±×∩∪⊂⊃]|\$|\bif\b|\bfor all\b|\\frac|\\int|"
-    r"\bdx\b|\bdy\b|\bdz\b"
-)
 FORMULA_NO_RE = re.compile(r"\(\s*(\d+)\.\s*(\d+)\s*\)")
-HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
-NOISE_RE = re.compile(r"[\ufffd\uE000-\uF8FF]{2,}|[□■]{2,}")
-# A prose sentence starts with one of these; it is not a formula even if it
-# contains an arrow or an equals sign.
-PROSE_START_RE = re.compile(
-    r"^(Let|For|Define|We|If|Then|Suppose|The|In|By|Since|Write|Note|Recall|"
-    r"Consider|Given|Assume|Hence|Thus|Moreover|It|This|As|When|While)\b",
-    re.I,
-)
-
-
-def _is_formula_line(text: str) -> bool:
-    """Type a line as FORMULA only when it is math-dense and not a sentence."""
-    if PROSE_START_RE.search(text):
-        return False
-    hits = len(MATH_RE.findall(text))
-    return hits >= 2 and len(text) <= 220
+CONTROL_RE = re.compile(r"[\ufffd\uE000-\uF8FF\x00-\x08\x0b\x0c\x0e-\x1f]")
 
 
 def _clean(text: str) -> str:
@@ -48,14 +30,33 @@ def _clean(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def _span_rows(page) -> list[dict]:
+    rows = []
+    for block in page.get_text("dict")["blocks"]:
+        for line in block.get("lines", []):
+            text = "".join(s["text"] for s in line.get("spans", [])).strip()
+            if not text:
+                continue
+            rows.append({
+                "text": text,
+                "bbox": [round(v, 1) for v in line["bbox"]],
+                "size": round(max((s["size"] for s in line.get("spans", [])), default=0), 1),
+            })
+    return rows
+
+
+def _center_in(inner: list[float], outer: list[float], pad: float = 3.0) -> bool:
+    cx = (inner[0] + inner[2]) / 2
+    cy = (inner[1] + inner[3]) / 2
+    return (outer[0] - pad <= cx <= outer[2] + pad
+            and outer[1] - pad <= cy <= outer[3] + pad)
+
+
 def _cluster_image_boxes(page, pad=6.0, min_size=25.0) -> list[fitz.Rect]:
-    """Schematic figures are drawn as many 1x1 px line images, not vector
-    paths and not one picture. Cluster overlapping/adjacent line boxes into
-    figure rectangles (union-find on padded rects)."""
-    boxes = []
-    for info in page.get_image_info():
-        if info["width"] <= 4 or info["height"] <= 4:
-            boxes.append(fitz.Rect(info["bbox"]))
+    """Complement the layout model: schematic frames drawn as 1x1 px line
+    images are clustered into figure rectangles (union-find on padded rects)."""
+    boxes = [fitz.Rect(i["bbox"]) for i in page.get_image_info()
+             if i["width"] <= 4 or i["height"] <= 4]
     if not boxes:
         return []
     parent = list(range(len(boxes)))
@@ -71,7 +72,6 @@ def _cluster_image_boxes(page, pad=6.0, min_size=25.0) -> list[fitz.Rect]:
         for j in range(i + 1, len(boxes)):
             if ri.intersects(boxes[j] + (-pad, -pad, pad, pad)):
                 parent[find(j)] = find(i)
-
     groups: dict[int, fitz.Rect] = {}
     for i, b in enumerate(boxes):
         root = find(i)
@@ -79,102 +79,46 @@ def _cluster_image_boxes(page, pad=6.0, min_size=25.0) -> list[fitz.Rect]:
     return [r for r in groups.values() if r.width >= min_size and r.height >= min_size]
 
 
-def _span_rows(page) -> list[dict]:
-    """Line-level text with bbox and font size — the position source."""
-    rows = []
-    for block in page.get_text("dict")["blocks"]:
-        for line in block.get("lines", []):
-            text = "".join(s["text"] for s in line.get("spans", [])).strip()
-            if not text:
-                continue
-            spans = line.get("spans", [])
-            rows.append({
-                "text": text,
-                "bbox": [round(v, 1) for v in line["bbox"]],
-                "size": round(max((s["size"] for s in spans), default=0), 1),
-            })
-    return rows
-
-
-def _parse_markdown(md: str) -> list[dict]:
-    """Typed blocks from standard Markdown markers (no bespoke heuristics)."""
-    blocks: list[dict] = []
-    lines = md.splitlines()
-    i = 0
-    while i < len(lines):
-        raw = lines[i].strip()
-        if not raw:
-            i += 1
-            continue
-        if raw.startswith("<!-- Start of picture text"):
-            buf, i = [], i + 1
-            while i < len(lines) and "End of picture text" not in lines[i]:
-                buf.append(lines[i])
-                i += 1
-            i += 1
-            text = _clean(" ".join(buf))
-            if text:
-                toks = [t for t in re.split(r"\s+", text) if t]
-                short_ratio = (sum(1 for t in toks if len(t) <= 3) / len(toks)) if toks else 0
-                # Numbered display equation -> FORMULA; a pile of 1-3 char
-                # labels (f g h / c_x c_w) -> FIGURE.
-                if FORMULA_NO_RE.search(text):
-                    kind = "FORMULA"
-                elif short_ratio > 0.5:
-                    kind = "FIGURE"
-                else:
-                    kind = "FORMULA" if _is_formula_line(text) else "FIGURE"
-                blocks.append({"type": kind, "text": text,
-                               "origin": "picture-text"})
-            continue
-        m = HEADING_RE.match(raw)
-        if m:
-            blocks.append({"type": "H", "level": len(m.group(1)),
-                           "text": _clean(m.group(2)), "origin": "markdown"})
-            i += 1
-            continue
-        if raw.startswith("|"):
-            rows = []
-            while i < len(lines) and lines[i].strip().startswith("|"):
-                rows.append(lines[i].strip())
-                i += 1
-            blocks.append({"type": "TABLE", "text": "\n".join(rows),
-                           "origin": "markdown"})
-            continue
-        para = [raw]
-        i += 1
-        while i < len(lines):
-            nxt = lines[i].strip()
-            if not nxt or nxt.startswith(("#", "|", "<!--")):
-                break
-            para.append(nxt)
-            i += 1
-        text = _clean(" ".join(para))
-        if not text:
-            continue
-        if len(text) <= 2:  # stray page numbers / single letters
-            blocks.append({"type": "NOISE", "text": text, "origin": "markdown"})
+def _group_leftovers(rows: list[dict]) -> list[dict]:
+    """Lines outside any predicted region: group by y into prose blocks."""
+    blocks = []
+    for r in sorted(rows, key=lambda x: (x["bbox"][1], x["bbox"][0])):
+        y = r["bbox"][1]
+        if blocks and abs(y - blocks[-1]["_y"]) <= 6:
+            b = blocks[-1]
+            b["text"] += " " + r["text"]
+            b["bbox"] = [min(b["bbox"][0], r["bbox"][0]), min(b["bbox"][1], r["bbox"][1]),
+                         max(b["bbox"][2], r["bbox"][2]), max(b["bbox"][3], r["bbox"][3])]
         else:
-            blocks.append({"type": "FORMULA" if _is_formula_line(text) else "P",
-                           "text": text, "origin": "markdown"})
+            blocks.append({"type": "P", "text": r["text"], "bbox": list(r["bbox"]),
+                           "origin": "ungrouped", "_y": y})
+    for b in blocks:
+        b.pop("_y", None)
     return blocks
 
 
-def _attach_bbox(blocks: list[dict], rows: list[dict]) -> None:
-    """Best-effort position for each block: match its opening text to a line."""
-    for b in blocks:
-        key = re.sub(r"\s+", "", b["text"].split("|")[0])[:14].lower()
-        if not key:
-            continue
-        for r in rows:
-            if key and key[:10] in re.sub(r"\s+", "", r["text"]).lower():
-                b["bbox"] = r["bbox"]
-                b["font_size"] = r["size"]
-                break
+def _formula_anchors(rows: list[dict]) -> tuple[list[str], dict[str, str], list[str]]:
+    """Equation numbers + names paired in reading order (line-level, not
+    Markdown blocks, which regroup lines and break the pairing)."""
+    name_re = re.compile(r"([\u4e00-\u9fffA-Za-z]{2,12})\s*公式")
+    numbers: list[str] = []
+    name_map: dict[str, str] = {}
+    named: list[str] = []
+    current = ""
+    for r in rows:
+        m = name_re.search(r["text"])
+        if m and not any(c in m.group(1) for c in "这该三个些上述下列"):
+            current = m.group(1) + " 公式"
+            named.append(current)
+        for a, b in FORMULA_NO_RE.findall(r["text"]):
+            n = f"({a}.{b})"
+            numbers.append(n)
+            if current:
+                name_map[n] = current
+    return list(dict.fromkeys(numbers)), name_map, list(dict.fromkeys(named))
 
 
 def build_layout(book_id: str, page_no: int) -> dict:
-    """Build (and return) the typed layout of one page. Read-only w.r.t. pages."""
     path = pdf_path(book_id)
     doc = fitz.open(str(path))
     if page_no < 1 or page_no > len(doc):
@@ -182,96 +126,111 @@ def build_layout(book_id: str, page_no: int) -> dict:
         raise ValueError("page out of range")
     page = doc[page_no - 1]
 
-    md = pymupdf4llm.to_markdown(doc, pages=[page_no - 1], use_ocr=False)
-    blocks = _parse_markdown(md)
-    rows = _span_rows(page)
-    figure_boxes = _cluster_image_boxes(page)
-    _attach_bbox(blocks, rows)
+    regions = LR.detect_layout(page)
+    spans = _span_rows(page)
+    raw = "\n".join(r["text"] for r in spans)
+    quality = text_quality(raw)
 
-    # Text that sits INSIDE a schematic figure is a label, not prose.
-    # Figure glyphs are often non-printable in the embedded font; keep only
-    # printable tokens and record the rest as unreadable marks.
-    figure_labels: list[str] = []
-    unreadable_labels = 0
-    for r in rows:
-        cx = (r["bbox"][0] + r["bbox"][2]) / 2
-        cy = (r["bbox"][1] + r["bbox"][3]) / 2
-        if not any(box.contains(fitz.Point(cx, cy)) for box in figure_boxes):
-            continue
-        cleaned = re.sub(r"[^\x20-\x7e\u00a1-\uffff]", "", r["text"]).strip()
-        if cleaned and len(cleaned) <= 24 and re.search(r"[A-Za-z0-9\u4e00-\u9fff]", cleaned):
-            figure_labels.append(cleaned)
-        else:
-            unreadable_labels += 1
-    if figure_boxes:
-        printables = [x for x in figure_labels if re.search(r"[A-Za-z0-9\u4e00-\u9fff]", x)]
-        blocks.append({
-            "type": "FIGURE",
-            "text": " | ".join(printables) if printables
-                    else f"图内符号（{unreadable_labels} 处不可读标记）",
-            "origin": "image-geometry",
-            "bbox": [round(v, 1) for v in figure_boxes[0]],
-        })
-    # A picture-text block made mostly of those labels is a figure caption,
-    # not a formula (e.g. "f g h / c_x c_w").
-    label_set = {re.sub(r"\s+", "", x).lower() for x in figure_labels}
-    for b in blocks:
-        if b["type"] == "FORMULA" and b.get("origin") == "picture-text" and label_set:
-            toks = [t for t in re.split(r"\s+", b["text"]) if t]
-            if toks and sum(1 for t in toks if re.sub(r"\W", "", t).lower() in label_set) / len(toks) > 0.5:
-                b["type"] = "FIGURE"
-
-    # Whole-page bitmap + an OCR text layer on top: the text is untrustworthy.
     page_area = page.rect.get_area()
     full_bitmap = any(
         fitz.Rect(i["bbox"]).get_area() > 0.7 * page_area
         for i in page.get_image_info()
         if i["width"] > 400 and i["height"] > 400
     )
-    raw = "\n".join(r["text"] for r in rows)
-    quality = text_quality(raw)
-    if full_bitmap:
-        page_kind = "scanned_ocr" if raw.strip() else "scanned_image"
-        needs_vision = True
-    elif quality < 0.55 and raw.strip():
-        page_kind = "low_quality_text"
-        needs_vision = True
-    else:
-        page_kind = "text_layer"
-        needs_vision = False
+    garbled = bool(raw) and len(CONTROL_RE.findall(raw)) / len(raw) > 0.02
+    needs_ocr = bool(full_bitmap or garbled or (quality < 0.55 and raw.strip()))
 
-    numbers = [f"({a}.{b})" for a, b in FORMULA_NO_RE.findall(raw)]
-    # Anchors that the OCR layer mangled, e.g. "(0.7)" for (1.7).
+    if needs_ocr:
+        try:
+            rows = [{"text": r["text"], "bbox": r["bbox"], "size": 0}
+                    for r in LR.ocr_page(page)]
+            text_source = "rapidocr"
+        except Exception:
+            rows, text_source = spans, "text_layer"
+    else:
+        rows, text_source = spans, "text_layer"
+
+    # Assign lines to semantic regions.
+    blocks: list[dict] = []
+    used: set[int] = set()
+    for reg in regions:
+        kind = LR.LABEL_MAP.get(reg["label"], "P")
+        inside = [(i, r) for i, r in enumerate(rows)
+                  if _center_in(r["bbox"], reg["bbox"])]
+        if not inside:
+            continue
+        used.update(i for i, _ in inside)
+        inside.sort(key=lambda ir: (ir[1]["bbox"][1], ir[1]["bbox"][0]))
+        text = _clean(" ".join(r["text"] for _, r in inside))
+        if not text:
+            continue
+        b: dict = {"type": kind, "text": text, "bbox": reg["bbox"],
+                   "origin": f"layout:{reg['label']}"}
+        if kind == "H":
+            b["level"] = 1 if reg["label"] == "title" else 2
+        blocks.append(b)
+
+    if not regions:
+        # Fallback when the ONNX model is unavailable: Markdown markers.
+        try:
+            import pymupdf4llm
+            md = pymupdf4llm.to_markdown(doc, pages=[page_no - 1], use_ocr=False)
+            for line in md.splitlines():
+                s = line.strip()
+                if s.startswith("#"):
+                    level = len(s) - len(s.lstrip("#"))
+                    blocks.append({"type": "H", "level": level,
+                                   "text": _clean(s.lstrip("#")), "origin": "markdown"})
+                elif s.startswith("|"):
+                    if blocks and blocks[-1]["type"] == "TABLE":
+                        blocks[-1]["text"] += "\n" + s
+                    else:
+                        blocks.append({"type": "TABLE", "text": s, "origin": "markdown"})
+                elif s and not s.startswith("<!--"):
+                    blocks.append({"type": "P", "text": _clean(s), "origin": "markdown"})
+        except Exception:
+            blocks = [{"type": "P", "text": raw, "origin": "text-layer"}]
+    else:
+        blocks.extend(_group_leftovers([r for i, r in enumerate(rows) if i not in used]))
+
+    # Figure boxes: predicted picture regions + line-image clusters.
+    figure_boxes = [fitz.Rect(b["bbox"]) for b in blocks if b["type"] == "FIGURE"]
+    for r in _cluster_image_boxes(page):
+        if not any(fb.intersects(r) for fb in figure_boxes):
+            figure_boxes.append(r)
+
+    numbers, name_map, named = _formula_anchors(rows)
     for b in blocks:
         numbers.extend(f"({a}.{c})" for a, c in FORMULA_NO_RE.findall(b["text"]))
     numbers = list(dict.fromkeys(numbers))
 
-    # Pair equation numbers with the named formula heading that precedes them
-    # in READING ORDER (span rows are authoritative; Markdown regroups lines).
-    name_re = re.compile(r"([\u4e00-\u9fffA-Za-z]{2,12})\s*公式")
-    name_by_number: dict[str, str] = {}
-    named_seen: list[str] = []
-    current_name = ""
-    for r in rows:
-        m = name_re.search(r["text"])
-        if m and not any(c in m.group(1) for c in "这该三个些上述下列"):
-            current_name = m.group(1) + " 公式"
-            named_seen.append(current_name)
-        for a, c in FORMULA_NO_RE.findall(r["text"]):
-            if current_name:
-                name_by_number[f"({a}.{c})"] = current_name
+    if full_bitmap:
+        page_kind = "scanned_ocr" if rows else "scanned_image"
+    elif needs_ocr:
+        # Clean text layer polluted by figure glyphs / low quality: re-read
+        # locally, but this is not a full-page scan.
+        page_kind = "mixed_ocr"
+    elif quality < 0.55:
+        page_kind = "low_quality_text"
+    else:
+        page_kind = "text_layer"
 
     doc.close()
     return {
         "page_no": page_no,
         "page_kind": page_kind,
-        "needs_vision": needs_vision,
+        "text_source": text_source,
+        # Only a full-page bitmap still needs human/vision verification:
+        # formula characters are now read by local OCR, but NOT converted to
+        # LaTeX, so the UI must still ask for a human check.
+        "needs_vision": bool(full_bitmap),
         "text_quality": quality,
+        "layout_regions": regions,
         "figure_boxes": [[round(v, 1) for v in r] for r in figure_boxes],
-        "figure_labels": figure_labels,
+        "figure_labels": [b["text"] for b in blocks if b["type"] == "FIGURE"],
         "formula_numbers": numbers,
-        "formula_name_map": name_by_number,
-        "named_formulas": list(dict.fromkeys(named_seen)),
+        "formula_name_map": name_map,
+        "named_formulas": named,
         "blocks": blocks,
         "counts": {k: sum(1 for b in blocks if b["type"] == k)
                    for k in ("H", "TABLE", "P", "FORMULA", "FIGURE", "NOISE")},
@@ -279,15 +238,13 @@ def build_layout(book_id: str, page_no: int) -> dict:
 
 
 def render_layout_text(layout: dict, include_figure: bool = False) -> str:
-    """Human/LLM readable structured text. Figure labels are excluded by
-    default — this is the 'selective extraction' the user asked for."""
     out = []
     for b in layout["blocks"]:
         t = b["type"]
         if t == "NOISE" or (t == "FIGURE" and not include_figure):
             continue
         if t == "H":
-            out.append("#" * b.get("level", 1) + " " + b["text"])
+            out.append("#" * b.get("level", 2) + " " + b["text"])
         elif t == "TABLE":
             out.append("[TABLE]\n" + b["text"])
         elif t == "FORMULA":

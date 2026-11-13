@@ -58,8 +58,17 @@ export function LayoutBar({
           : 'border-ag-statusOcr text-ag-statusOcr'}`}>
         {layout.page_kind === 'text_layer'
           ? t('workbench.layoutKindText')
-          : t('workbench.layoutKindScan')}
+          : layout.page_kind === 'mixed_ocr'
+            ? t('workbench.layoutKindMixed')
+            : t('workbench.layoutKindScan')}
       </span>
+      {layout.text_source && (
+        <span className="ag-mono text-micro text-ag-ink3">
+          {t('workbench.layoutSource')}: {layout.text_source === 'rapidocr'
+            ? t('workbench.layoutSourceOcr')
+            : t('workbench.layoutSourceLayer')}
+        </span>
+      )}
       {(c.FIGURE ?? 0) > 0 && (
         <span className="text-micro text-ag-ink3">{t('workbench.layoutFigures')}</span>
       )}

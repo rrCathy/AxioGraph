@@ -20,9 +20,8 @@ import page_service as ps
 
 log = logging.getLogger("axiograph.extract")
 
-UNREADABLE_FORMULA_NOTE = (
-    "公式本体未能从文本层恢复：此页是扫描图像 + 低质量 OCR 文本层。"
-    "请用「视觉识别」重做或人工录入后再确认，系统不会编造公式内容。"
+OCR_FORMULA_NOTE = (
+    "（以上为本地 OCR 从页面读出的公式字符，尚未转换为 LaTeX；请人工核对后再确认）"
 )
 
 # Cooperative cancellation for long extraction calls. AbortController on the
@@ -206,11 +205,25 @@ def _parse_items(response: str) -> tuple[list[dict], bool]:
 def _formula_candidates(conn, book_id: str, start: int, end: int) -> list[dict]:
     """Turn typed FORMULA blocks into pending nodes for human confirmation.
 
-    On scanned/OCR pages the formula body is unrecoverable from the text
-    layer, so we emit an explicit 'needs entry' placeholder per equation
-    number instead of inventing LaTeX. Re-running a window never duplicates.
+    Formula bodies come from local OCR (or the text layer), never from
+    invention. Equation numbers are paired with the named formula heading
+    that precedes them in reading order. Re-running never duplicates, and
+    stale placeholders from the previous implementation are replaced.
     """
     saved: list[dict] = []
+    # Warm the layout cache on separate short-lived connections BEFORE the
+    # caller's transaction starts writing: ensure_layout() would otherwise
+    # try to UPDATE pages from another connection and hit "database is locked".
+    for pno in range(start, end + 1):
+        ps.ensure_layout(book_id, pno)
+    # Replace the old "unrecoverable" placeholders with real OCR content.
+    conn.execute(
+        """DELETE FROM candidates WHERE book_id = ? AND page_start BETWEEN ? AND ?
+           AND entity_type = 'FORMULA' AND status = 'pending'
+           AND (content LIKE '公式本体未能从文本层恢复%'
+                OR name LIKE '%编号未识别%')""",
+        (book_id, start, end),
+    )
     for pno in range(start, end + 1):
         layout = ps.ensure_layout(book_id, pno)
         if not layout:
@@ -218,31 +231,36 @@ def _formula_candidates(conn, book_id: str, start: int, end: int) -> list[dict]:
         headings = [b["text"][:60] for b in layout["blocks"] if b["type"] == "H"]
         context = headings[-1] + " · " if headings else ""
         formulas = [b for b in layout["blocks"] if b["type"] == "FORMULA"]
-        if layout["needs_vision"]:
-            # Names come from the page's own reading order (built in
-            # page_layout); the formula BODY is never guessed.
-            name_map = layout.get("formula_name_map") or {}
-            numbers = layout.get("formula_numbers") or [f"p{pno}"]
-            used_names = set()
-            entries = []
+        numbers = [n for n in (layout.get("formula_numbers") or [])
+                   if n.startswith("(")]
+        name_map = layout.get("formula_name_map") or {}
+        used_names: set[str] = set()
+        entries: list[tuple[str, str]] = []
+
+        if numbers:
             for n in numbers:
                 label = name_map.get(n)
                 if label:
                     used_names.add(label)
+                body = next((b["text"] for b in formulas if n in b["text"]), None)
+                if body and body.strip() != n:
+                    content = body + "\n\n" + OCR_FORMULA_NOTE
+                else:
+                    content = (f"本地 OCR 只读到编号 {n}，公式本体未读出。"
+                               + OCR_FORMULA_NOTE)
                 name = (f"{label} {n} (p{pno})" if label
-                        else f"待补录公式 {n} (p{pno})" if n.startswith("(")
-                        else f"待补录公式 (p{pno})")
-                entries.append((name, UNREADABLE_FORMULA_NOTE))
-            # A named formula whose number the OCR layer mangled entirely.
+                        else f"公式 {n} (p{pno})")
+                entries.append((name, content))
             for label in layout.get("named_formulas") or []:
                 if label not in used_names:
-                    entries.append((f"{label} (编号未识别, p{pno})",
-                                    UNREADABLE_FORMULA_NOTE))
+                    entries.append((f"{label} (未匹配编号, p{pno})",
+                                    "公式区域已定位，但编号未读出。" + OCR_FORMULA_NOTE))
         else:
             entries = [
-                (f"{context}公式 {i} (p{pno})", b["text"])
+                (f"{context}公式 {i} (p{pno})", b["text"] + "\n\n" + OCR_FORMULA_NOTE)
                 for i, b in enumerate(formulas, 1)
             ]
+
         for name, content in entries:
             dup = conn.execute(
                 """SELECT 1 FROM candidates WHERE book_id = ? AND name = ?

@@ -46,6 +46,31 @@
 
 **仍未做（诚实边界）**：E 图像级重识别——p24 公式本体仍需视觉模型或本地公式 OCR，当前只给占位节点并提示用户补录，不生成假 LaTeX。
 
+## 第二轮（2026-11-13）：本地识别引擎，替换文本层整理路线
+
+用户反馈「效果还是不行」，实查确认第一轮只是把坏文本层排整齐：目录表格把单词劈成 `Intro|duction`、p24 的 4 个公式节点 content 全是「公式本体未能恢复」占位。免费视觉服务复测：glm / llama-vision 429，nemotron-parse 返回空格点线，`/v1/models` 的 `available=True` 是假信号。
+
+用户拍板「上本地识别模型」。侦察发现本机已有 `torch 2.12.1` / `onnxruntime 1.31.1` / `rapidocr_onnxruntime 1.4.4`，且 PyMuPDF 1.28.2 自带 `pymupdf.layout` **16 个 ONNX 版面权重**（无需下载）。全部离线、无限流。
+
+| 引擎 | 真跑结果 |
+|------|----------|
+| `pymupdf.layout` ONNX 版面 | p14 一次 predict 给出 `section-header`×1 / `text`×5 / **`formula`×2** / **`picture`×1**（y371–645 罩住三个示意图）/ `page-header`；p24 给出 16 个区域 |
+| 本地 RapidOCR | p24 整页 9.8s（2× 渲染 2988×3985），46 行中文置信 0.9+；旧乱码 `仁）又尸` / `护Pdx` / `j』（望＋份＋詈）` 全消失；`(1.5)(1.6)(1.7)(1.8)` 四个编号全读出（旧层把 1.7 打成 0.7） |
+
+改造：`local_recognize.py` 封装两个单例引擎；`page_layout.py` 改为「版面区域 + 行 bbox 归类」，整页位图/文本层乱码才触发本地 OCR，pymupdf4llm Markdown 仅作兜底。修掉 `\n` 被算作控制字符导致三页全误判为扫描页的 bug；`mixed_ocr` 区分「文本层被图内符号污染」与真扫描页。
+
+验收（`scripts/verify_layout.py`，真实输出）：
+
+| 页 | 第一轮 | 第二轮 |
+|----|--------|--------|
+| p3 | `\|Intro\|duction\|1\|` 碎词 | `text_layer`，H1 `Contents` + TABLE `Introduction 1 Chapter 1. … 5`，单词完整 |
+| p14 | 分段函数整个丢失、图内文字混正文 | `mixed_ocr` **本地 OCR**，FORMULA×2（分段函数读回）、FIGURE×1、图内标注 **0 泄漏** |
+| p24 | 4 个占位节点 | `scanned_ocr`，FORMULA×3、编号 (1.5)~(1.8) 全对、Green/Stokes/Gauss 全配对；公式节点 content 是**页面真实 OCR 字符**，明确标注未转 LaTeX |
+
+`POST /extract p24-24` 端到端：8 个候选（LLM 的 Green/Stokes/Gauss/外微分形式 4 个 + 4 个 FORMULA），**旧占位候选 0 个**。修掉 `_formula_candidates` 在调用方事务内触发 `ensure_layout` 写库导致 `database is locked` 的真 bug。
+
+**仍未做**：公式图 → LaTeX（pix2tex 权重源 HF 401，未装）。当前公式字符是 OCR 原文、结构仍散，节点明确标注「未转 LaTeX，请人工核对」，不编造。PaddleOCR 未装——本机无条件实跑其准确率，不替它背书。
+
 ## 待用户拍板
 
-- 是否把 E 列为本期目标，还是先接受"扫描页公式标未识别 + 人工/视觉按钮补录"。
+- 是否继续攻公式 LaTeX 化（需解决 pix2tex 权重源，或换其他本地公式 OCR）。

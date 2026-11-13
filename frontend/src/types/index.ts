@@ -81,7 +81,8 @@ export interface LayoutBlock {
 
 export interface PageLayout {
   page_no: number
-  page_kind: 'text_layer' | 'scanned_ocr' | 'scanned_image' | 'low_quality_text'
+  page_kind: 'text_layer' | 'scanned_ocr' | 'scanned_image' | 'low_quality_text' | 'mixed_ocr'
+  text_source?: string
   needs_vision: boolean
   text_quality: number
   figure_boxes: number[][]
