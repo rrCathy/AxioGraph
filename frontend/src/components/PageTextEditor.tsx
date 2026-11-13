@@ -9,6 +9,14 @@ const escapeHtml = (s: string) =>
 const toHtml = (text: string) =>
   text.split('\n').map((line) => `<p>${escapeHtml(line)}</p>`).join('') || '<p></p>'
 
+const FONT_SIZES = [13, 15, 16, 18, 20, 24] as const
+const FONT_KEY = 'ag-editor-font-size'
+
+function initialFontSize(): number {
+  const saved = Number(localStorage.getItem(FONT_KEY))
+  return FONT_SIZES.includes(saved as typeof FONT_SIZES[number]) ? saved : 15
+}
+
 interface Props {
   text: string
   onSave: (text: string) => void
@@ -34,6 +42,12 @@ export default function PageTextEditor({
   const [selectedCount, setSelectedCount] = useState(0)
   const [dirty, setDirty] = useState(false)
   const [justSaved, setJustSaved] = useState(false)
+  const [fontSize, setFontSize] = useState(initialFontSize)
+
+  const changeFontSize = (px: number) => {
+    setFontSize(px)
+    localStorage.setItem(FONT_KEY, String(px))
+  }
 
   useEffect(() => {
     if (!editor || editor.getText() === text) return
@@ -82,6 +96,17 @@ export default function PageTextEditor({
         <span className="text-caption text-ag-ink3 flex-1 ag-mono">
           {selectedCount > 0 ? `已选 ${selectedCount} 字` : `${text.length} 字符`}
         </span>
+        <label className="flex items-center gap-1.5 text-caption text-ag-ink3">
+          <span className="shrink-0">字号</span>
+          <select
+            value={fontSize}
+            onChange={(e) => changeFontSize(Number(e.target.value))}
+            className="ag-focus-ring bg-ag-bg2 border border-ag-line2 rounded-btn px-1.5 py-0.5 text-caption text-ag-ink1"
+            aria-label="提取文本字号"
+          >
+            {FONT_SIZES.map((px) => <option key={px} value={px}>{px}px</option>)}
+          </select>
+        </label>
         <Button size="sm" onClick={quoteSelection} disabled={selectedCount === 0}>
           引用选中
         </Button>
@@ -90,7 +115,9 @@ export default function PageTextEditor({
         </Button>
       </div>
       <div className="flex-1 overflow-auto ag-right-pane bg-ag-bg2" style={{ padding: '24px 28px' }}>
-        <div style={{ maxWidth: 'var(--ag-measure)' }}>
+        <div
+          style={{ maxWidth: 'var(--ag-measure)', '--ag-editor-fs': `${fontSize}px` } as React.CSSProperties}
+        >
           <EditorContent editor={editor} />
         </div>
       </div>

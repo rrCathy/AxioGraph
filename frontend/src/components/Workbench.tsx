@@ -11,9 +11,10 @@ import PageTextEditor from './PageTextEditor'
 import { useLongTask } from '../hooks/useLongTask'
 import {
   QuoteStrip, PageViewer, LayoutBar, LongTaskStatus, UndoToast,
-  MergePreview, RelationNote, ConfirmedSummary, FormulaStrip,
+  MergePreview, RelationNote, ConfirmedSummary,
 } from './workbench/WorkbenchPanels'
 import BookStructurePanel from './workbench/BookStructurePanel'
+import TocPanel from './workbench/TocPanel'
 
 type RightTab = 'text' | 'candidates'
 
@@ -44,8 +45,9 @@ export default function Workbench() {
   const [narrow, setNarrow] = useState(() => window.innerWidth < 1024)
   const [narrowView, setNarrowView] = useState<'page' | 'text'>('text')
 
-  // Book structure panel + auto mode
+  // Book structure panel + TOC sidebar + auto mode
   const [structureOpen, setStructureOpen] = useState(false)
+  const [tocOpen, setTocOpen] = useState(false)
   const [autoOpen, setAutoOpen] = useState(false)
   const [autoStatus, setAutoStatus] = useState<AutoStatus | null>(null)
   const autoStatusRef = useRef<AutoStatus | null>(null)
@@ -76,10 +78,45 @@ export default function Workbench() {
     setPages(r.pages || [])
   }, [bookId])
 
-  const loadPage = useCallback(async () => {
+  // Visited pages stay in a small LRU cache so flipping back and forth is
+  // instant; a request serial guards against stale responses overtaking the
+  // page the user has already navigated to.
+  const pageCacheRef = useRef<Map<string, PageDetail>>(new Map())
+  const pageReqRef = useRef(0)
+  const invalidatePage = useCallback((n?: number) => {
+    if (!bookId) return
+    if (n == null) {
+      for (const k of [...pageCacheRef.current.keys()]) {
+        if (k.startsWith(`${bookId}#`)) pageCacheRef.current.delete(k)
+      }
+    } else {
+      pageCacheRef.current.delete(`${bookId}#${n}`)
+    }
+  }, [bookId])
+
+  const [pageLoading, setPageLoading] = useState(false)
+  const loadPage = useCallback(async (target?: number) => {
+    const n = target ?? pageNo
     if (!bookId) { setPage(null); return }
-    try { setPage(await api.getPage(bookId, pageNo)) }
-    catch { setPage(null) }
+    const key = `${bookId}#${n}`
+    const cached = pageCacheRef.current.get(key)
+    if (cached) { setPage(cached); setPageLoading(false); return }
+    const req = ++pageReqRef.current
+    setPageLoading(true)
+    try {
+      const data = await api.getPage(bookId, n)
+      if (pageReqRef.current !== req) return // user moved on; drop stale data
+      pageCacheRef.current.set(key, data)
+      if (pageCacheRef.current.size > 60) {
+        const oldest = pageCacheRef.current.keys().next().value
+        if (oldest != null) pageCacheRef.current.delete(oldest)
+      }
+      setPage(data)
+    } catch {
+      if (pageReqRef.current === req) setPage(null)
+    } finally {
+      if (pageReqRef.current === req) setPageLoading(false)
+    }
   }, [bookId, pageNo])
 
   const loadCandidates = useCallback(async () => {
@@ -172,7 +209,8 @@ export default function Workbench() {
       const r = await api.submitOcr(bookId, pageNo, data.text || '', data.confidence || 0)
       setMsg(r.needs_manual ? t('workbench.ocrFailed') : t('workbench.ocrDone'))
       setStatus(r.needs_manual ? t('workbench.ocrFailed') : t('workbench.ocrDone'))
-      await loadPage(); await loadPages()
+      invalidatePage(pageNo)
+      await loadPage(pageNo); await loadPages()
       setTab('text')
       setNarrowView('text')
     } catch (e) {
@@ -208,7 +246,8 @@ export default function Workbench() {
       } else if (r.ok) {
         setMsg(r.needs_manual ? t('workbench.visionFailed') : t('workbench.visionDone'))
         setStatus(r.needs_manual ? t('workbench.visionFailed') : t('workbench.visionDone'))
-        await loadPage()
+        invalidatePage(pageNo)
+        await loadPage(pageNo)
         await loadPages()
         setTab('text')
         setNarrowView('text')
@@ -317,6 +356,7 @@ export default function Workbench() {
     try {
       const r = await api.importPages(bookId)
       await loadPages()
+      pageCacheRef.current.clear() // page index rebuilt: drop every cached page
       setPageNo(1)
       setPage(await api.getPage(bookId, 1))
       setMsg(t('workbench.pagesImported').replace('{n}', String(r.page_count)))
@@ -327,7 +367,8 @@ export default function Workbench() {
   const saveText = async (text: string) => {
     if (!bookId) return
     await api.savePageText(bookId, pageNo, text)
-    await loadPage(); await loadPages()
+    invalidatePage(pageNo)
+    await loadPage(pageNo); await loadPages()
     setMsg(t('workbench.saved'))
     setStatus(t('workbench.saved'))
   }
@@ -336,6 +377,7 @@ export default function Workbench() {
     if (!bookId) return
     try {
       await api.relayout(bookId)
+      invalidatePage()
       await loadPage()
       setMsg('版面已按 PDF 重排')
       setStatus('版面已重排')
@@ -513,6 +555,9 @@ export default function Workbench() {
         <Button size="sm" disabled={!bookId || !total} onClick={() => setAutoOpen(!autoOpen)}>
           {t('workbench.autoTitle')}
         </Button>
+        <Button size="sm" variant="ghost" disabled={!bookId} onClick={() => setTocOpen(!tocOpen)}>
+          {t('workbench.toc')}
+        </Button>
         <Button size="sm" variant="ghost" disabled={!bookId || task.active} onClick={() => setStructureOpen(true)}>
           {t('workbench.structure')}
         </Button>
@@ -663,15 +708,20 @@ export default function Workbench() {
             {tab === 'text' ? (
               page ? (
                 <div className="flex-1 min-h-0 flex flex-col">
+                  {pageLoading && (
+                    <div className="shrink-0 flex items-center gap-2 px-3 py-1 border-b border-ag-line1 bg-ag-bg2" role="status">
+                      <span className="inline-block w-1.5 h-1.5 rounded-dot bg-ag-cinnabar animate-pulse" aria-hidden="true" />
+                      <span className="text-caption text-ag-ink3">
+                        {t('workbench.loadingPage').replace('{n}', String(pageNo))}
+                      </span>
+                    </div>
+                  )}
                   <LayoutBar
                     layout={page.layout}
                     structured={structuredText}
                     onToggle={setStructuredText}
                     onRelayout={() => void doRelayout()}
                   />
-                  {structuredText && page.layout && (
-                    <FormulaStrip layout={page.layout} />
-                  )}
                   <div className="flex-1 min-h-0">
                     <PageTextEditor
                       text={structuredText ? (page.layout_text || page.text) : page.text}
@@ -696,6 +746,15 @@ export default function Workbench() {
       </div>
 
       {undo && <UndoToast label={undo.label} onUndo={() => void undo.run()} />}
+
+      <TocPanel
+        bookId={bookId ?? ''}
+        open={tocOpen && !!bookId}
+        pageNo={pageNo}
+        onClose={() => setTocOpen(false)}
+        onJump={(p) => goPage(Math.max(1, Math.min(p, total || p)))}
+        onOpenStructure={() => { setTocOpen(false); setStructureOpen(true) }}
+      />
 
       <BookStructurePanel
         bookId={bookId ?? ''}
