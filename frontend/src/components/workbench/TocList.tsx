@@ -67,9 +67,10 @@ export default function TocList({ bookId, pageNo, refreshKey = 0, onJump, onOpen
   }, [bookId, refreshKey])
 
   const offset = st?.offset ?? null
+  const fullToc = st?.toc_full?.length ? st.toc_full : (st?.toc || [])
   const tree = useMemo(
-    () => buildTree(st?.toc || [], offset),
-    [st, offset],
+    () => buildTree(fullToc, offset),
+    [fullToc, offset],
   )
 
   // Collapse rule: levels deeper than the first start collapsed unless the
@@ -144,7 +145,7 @@ export default function TocList({ bookId, pageNo, refreshKey = 0, onJump, onOpen
   if (loading) {
     return <div className="p-4 text-caption text-ag-ink3">{t('workbench.tocLoading')}</div>
   }
-  const toc = st?.toc || []
+  const toc = fullToc
   if (toc.length === 0) {
     return (
       <div className="p-4 flex flex-col gap-3">

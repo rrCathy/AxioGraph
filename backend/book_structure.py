@@ -505,9 +505,10 @@ def detect_structure(book_id: str, task_id: str | None = None) -> dict:
                 if it["pdf_page"] is None and it["book_page"] is not None:
                     it["pdf_page"] = it["book_page"] + offset
 
-    # The saved outline keeps only TOP-LEVEL entries — chapters and the
-    # front-matter items (title / preface / contents) that sit beside them.
-    # Deeper levels were parsing fuel for the offset, not structure.
+    # Two views of the same parse:
+    #   toc      — TOP-LEVEL only (structure editor + chapter nodes);
+    #   toc_full — every level, for the TOC navigation tree.
+    result["toc_full"] = result["toc"]
     result["toc"] = [it for it in result["toc"] if it.get("level", 1) <= 1]
 
     # Cover fallback for title/author when metadata is empty: try the first

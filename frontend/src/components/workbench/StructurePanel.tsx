@@ -115,6 +115,7 @@ export default function StructurePanel({ bookId, refreshKey = 0, onJump, onConfi
     offset: offset.trim() === '' ? null : Number(offset),
     source: st?.source ?? 'manual',
     toc,
+    toc_full: st?.toc_full ?? [],
   })
 
   const save = async (): Promise<boolean> => {

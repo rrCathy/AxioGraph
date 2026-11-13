@@ -185,7 +185,10 @@ export interface BookStructure {
   offset: number | null
   offset_confidence?: number
   source: string | null
+  /** Top-level outline only — the structure editor + chapter nodes. */
   toc: TocItem[]
+  /** Every parsed level — the TOC navigation tree. */
+  toc_full?: TocItem[]
   confirmed?: boolean
   updated_at?: string
 }
