@@ -188,9 +188,11 @@ export default function StructurePanel({ bookId, refreshKey = 0, onJump, onConfi
         <span className="ml-auto text-micro ag-mono text-ag-ink3">
           {st?.source ? (st.source === 'bookmark'
             ? t('workbench.structSourceBookmark')
-            : st.source === 'vision'
-              ? t('workbench.structSourceVision')
-              : t('workbench.structSourceManual')) : ''}
+            : st.source === 'text'
+              ? t('workbench.structSourceText')
+              : st.source === 'vision'
+                ? t('workbench.structSourceVision')
+                : t('workbench.structSourceManual')) : ''}
         </span>
       </div>
 

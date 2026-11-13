@@ -31,6 +31,141 @@ TOC_PAGE_PATTERNS = re.compile(
 MAX_TOC_SCAN_PAGES = 20
 MAX_VISION_TOC_PROBES = 6
 
+TOC_ANCHOR_RE = re.compile(r"^\s*(目\s*录|目\s*次|contents|table of contents)\s*$", re.I)
+_NUM_ONLY_RE = re.compile(r"^\d{1,4}$")
+_DOTTED_NO_RE = re.compile(r"^\d{1,3}(?:\.\d{1,2}){1,2}$")
+_LEAD_NO_RE = re.compile(r"^(\d{1,3}(?:\.\d{1,2}){0,2})\s*(.*\S)")
+_TAIL_PAGE_RE = re.compile(r"^(.*\S)\s+(\d{1,4})$")
+_DOTS_RE = re.compile(r"(?:\.\s*){3,}|[.·…]{4,}")
+
+
+def _strip_dots(s: str) -> str:
+    s = _DOTS_RE.sub(" ", s)
+    return s.strip(" .·…").strip()
+
+
+def _page_toc_text(page) -> str:
+    """Text of a TOC page with two-column layouts re-sequenced: plain text
+    mode merges left/right columns line by line, scrambling the entry
+    stream. Line bboxes are regrouped into columns by x."""
+    try:
+        d = page.get_text("dict")
+        mid = page.rect.width / 2
+        left, right = [], []
+        for b in d.get("blocks", []):
+            for l in b.get("lines", []):
+                text = "".join(s["text"] for s in l.get("spans", [])).strip()
+                if not text:
+                    continue
+                (left if l["bbox"][0] < mid - 15 else right).append((l["bbox"][1], text))
+        dot_re = re.compile(r"(?:\.\s*){3,}|[.\u00b7\u2026]{4,}")
+        left_dots = sum(1 for _, t in left if dot_re.search(t))
+        right_dots = sum(1 for _, t in right if dot_re.search(t))
+        # A right-aligned page-number column is NOT a second column: regroup
+        # only when both sides carry their own dot-leader entries.
+        if left_dots >= 2 and right_dots >= 2:
+            left.sort(key=lambda t: t[0])
+            right.sort(key=lambda t: t[0])
+            return "\n".join(t for _, t in left) + "\n" + "\n".join(t for _, t in right)
+    except Exception:
+        pass
+    return page.get_text("text") or ""
+
+
+def _local_toc_items(text: str) -> list[dict]:
+    """Parse a text-layer TOC page WITHOUT any model.
+
+    LaTeX-style TOCs come out of the text layer as a token stream — entry
+    number line, title line(s), dot-leader line, page-number line (or the
+    whole entry on one line) — which a small state machine reassembles.
+    Returns [] when the page does not parse as a TOC (fewer than 5 entries),
+    so callers can fall back to vision.
+    """
+    lines = [l.strip() for l in (text or "").splitlines()]
+    start = next((i for i, l in enumerate(lines) if TOC_ANCHOR_RE.match(l)), -1)
+    tokens = lines[start + 1:] if start >= 0 else lines
+    if start < 0:
+        # No "目录" heading: only treat the page as a TOC when dot leaders and
+        # bare page numbers are abundant (multi-page TOC continuations).
+        dots = sum(1 for l in tokens if _DOTS_RE.search(l))
+        nums = sum(1 for l in tokens if _NUM_ONLY_RE.match(l))
+        tail_nums = sum(1 for l in tokens
+                        if not _NUM_ONLY_RE.match(l) and _TAIL_PAGE_RE.match(_strip_dots(l)))
+        if dots < 3 or (nums < 5 and tail_nums < 5):
+            return []
+
+    entries: list[dict] = []
+    cur_no, cur_title = "", []
+
+    def finish(page_no: int | None):
+        nonlocal cur_no, cur_title
+        title = _strip_dots(" ".join(t for t in cur_title if t))
+        if title and page_no and page_no <= 5000:
+            level = min(3, cur_no.count(".") + 1) if cur_no else 1
+            entries.append({"level": level, "title": title,
+                            "book_page": page_no, "pdf_page": None})
+        cur_no, cur_title = "", []
+
+    for raw in tokens:
+        line = raw.strip()
+        if not line:
+            continue
+        if _NUM_ONLY_RE.match(line):               # bare integer
+            if cur_no and cur_title:
+                finish(int(line))                  # page number completes it
+            elif not cur_no:
+                cur_no = line                      # bare chapter number
+            else:
+                cur_no, cur_title = line, []       # stray number: restart
+            continue
+        if _DOTTED_NO_RE.match(line):              # "1.1" / "2.7.4" alone
+            finish(None)
+            cur_no, cur_title = line, []
+            continue
+        clean = _strip_dots(line)
+        if not clean:
+            continue
+        tail_page = None
+        pm = _TAIL_PAGE_RE.match(clean)
+        if pm and (len(pm.group(2)) <= 3 or int(pm.group(2)) <= 500):
+            tail_page = int(pm.group(2))
+            clean = _strip_dots(pm.group(1))
+            if not clean:
+                continue
+        m = _LEAD_NO_RE.match(clean)
+        if m and int(m.group(1).split(".")[0]) <= 200:
+            finish(None)                           # unfinished entry: drop
+            cur_no, cur_title = m.group(1), [m.group(2)]
+        elif cur_no:
+            cur_title.append(clean)
+        elif tail_page is None:
+            continue                               # prose outside entries
+        else:
+            cur_title.append(clean)                # unnumbered entry title
+        if tail_page is not None:
+            finish(tail_page)                      # entry closed on same line
+    finish(None)
+    return entries if len(entries) >= 5 else []
+
+
+def _cover_meta_from_text(text: str) -> dict:
+    """Heuristic cover/flyleaf metadata from the first text page: first
+    non-empty line is the title; a short pure-Chinese line among the first
+    few lines is the author. Local-only fallback when PDF metadata is empty."""
+    out: dict = {}
+    for raw in (text or "").splitlines():
+        s = raw.strip()
+        if not s or TOC_ANCHOR_RE.match(s):
+            continue
+        if "title" not in out and 2 <= len(s) <= 40 and not s.isdigit():
+            out["title"] = s
+            continue
+        if "author" not in out and re.fullmatch(r"[\u4e00-\u9fff·]{2,6}", s):
+            out["author"] = s
+        if len(out) == 2:
+            break
+    return out
+
 VISION_TOC_PROMPT = """这是一本书的目录页图片。请逐条解析目录条目。
 规则：
 1. 每条输出：level（1=章，2=节，3=小节，按缩进与编号判断）、title（条目文字，保持原文语言）、book_page（目录中标注的书页码整数；没有页码填 null）。
@@ -227,8 +362,19 @@ def _vision_toc_items(book_id: str, page_no: int) -> list[dict]:
 
 
 def parse_toc_page(book_id: str, page_no: int) -> dict:
-    """Manually designated TOC page → vision-parsed entries (not saved)."""
-    items = _vision_toc_items(book_id, page_no)
+    """Manually designated TOC page → parsed entries (not saved). Text-layer
+    pages parse locally; vision is the fallback for scanned/odd layouts."""
+    doc = fitz.open(str(ps.pdf_path(book_id)))
+    if page_no < 1 or page_no > len(doc):
+        doc.close()
+        return {"ok": True, "page_no": page_no, "items": []}
+    text = _page_toc_text(doc[page_no - 1])
+    doc.close()
+    items: list[dict] = []
+    if ps.text_quality(text) >= 0.55:
+        items = _local_toc_items(text)
+    if not items:
+        items = _vision_toc_items(book_id, page_no)
     offset = (get_structure(book_id) or {}).get("offset")
     if offset is not None:
         for it in items:
@@ -261,22 +407,31 @@ def detect_structure(book_id: str, task_id: str | None = None) -> dict:
     if toc_raw:
         result["source"] = "bookmark"
         result["toc"] = [
-            {"level": max(1, min(3, int(lvl))), "title": str(title).strip(),
+            {"level": max(1, min(3, int(lvl))), "title": str(title).replace("\x00", "").strip(),
              "book_page": None, "pdf_page": int(page)}
-            for lvl, title, page in toc_raw if str(title).strip()
+            for lvl, title, page in toc_raw if str(title).replace("\x00", "").strip()
         ]
         doc.close()
     else:
-        # Locate the TOC page: text-layer hit first, then vision probes.
+        # Locate the TOC page. Text-layer pages parse locally first (no model,
+        # immune to LLM rate limits); vision is only the last resort.
         toc_page_no = None
+        toc_page_text = ""
         scan = range(1, min(MAX_TOC_SCAN_PAGES, n_pages) + 1)
         for page_no in scan:
-            rendered = ps.render_page(book_id, page_no, zoom=1.0)
+            if is_cancelled(task_id):
+                doc.close()
+                return {"cancelled": True}
             page = doc[page_no - 1]
-            text = page.get_text("text") or ""
-            if _looks_like_toc_page(text) and ps.text_quality(text) >= 0.55:
-                toc_page_no = page_no
+            text = _page_toc_text(page)
+            if ps.text_quality(text) < 0.55:
+                continue
+            local = _local_toc_items(text)
+            if local:
+                toc_page_no, toc_page_text = page_no, text
                 break
+            if toc_page_no is None and _looks_like_toc_page(text):
+                toc_page_no, toc_page_text = page_no, text
         if toc_page_no is None:
             # Scanned book: probe the first pages with the vision model.
             for page_no in scan:
@@ -294,12 +449,25 @@ def detect_structure(book_id: str, task_id: str | None = None) -> dict:
                     result["toc"] = items
                     break
         else:
-            result["source"] = "vision"
-            try:
-                result["toc"] = _vision_toc_items(book_id, toc_page_no)
-            except Exception as e:
-                log.warning("vision TOC parse failed p%s: %s", toc_page_no, e)
-                result["toc"] = []
+            local = _local_toc_items(toc_page_text)
+            # TOCs usually span several pages: keep parsing while entries flow.
+            page_no = toc_page_no
+            while local and page_no - toc_page_no < 10 and page_no < n_pages:
+                page_no += 1
+                more = _local_toc_items(_page_toc_text(doc[page_no - 1]))
+                if not more:
+                    break
+                local.extend(more)
+            if len(local) >= 5:
+                result["source"] = "text"
+                result["toc"] = local
+            else:
+                result["source"] = "vision"
+                try:
+                    result["toc"] = _vision_toc_items(book_id, toc_page_no)
+                except Exception as e:
+                    log.warning("vision TOC parse failed p%s: %s", toc_page_no, e)
+                    result["toc"] = []
         doc.close()
 
     if is_cancelled(task_id):
@@ -316,7 +484,21 @@ def detect_structure(book_id: str, task_id: str | None = None) -> dict:
                 if it["pdf_page"] is None and it["book_page"] is not None:
                     it["pdf_page"] = it["book_page"] + offset
 
-    # Cover fallback for title/author when metadata is empty.
+    # Cover fallback for title/author when metadata is empty: try the first
+    # page's text layer locally (no model) before spending a vision call.
+    if not result["title"] or not result["author"]:
+        try:
+            first_doc = fitz.open(str(path))
+            first_text = first_doc[0].get_text("text") if n_pages else ""
+            first_doc.close()
+        except Exception:
+            first_text = ""
+        local_meta = _cover_meta_from_text(first_text) if ps.text_quality(first_text) >= 0.55 else {}
+        if not result["title"] and local_meta.get("title"):
+            result["title"] = local_meta["title"]
+            result["source"] = result["source"] or "text"
+        if not result["author"] and local_meta.get("author"):
+            result["author"] = local_meta["author"]
     if not result["title"] or not result["author"]:
         try:
             rendered = ps.render_page(book_id, 1, zoom=1.5)
