@@ -521,25 +521,38 @@ export default function Workbench() {
 
   return (
     <div className="relative flex flex-col h-full min-h-0">
-      <div className="shrink-0 flex items-center gap-2.5 px-4 h-topbar border-b border-ag-line1 bg-ag-bg1">
+      {/* Compact control strip: book, page nav, window, status (36px — the
+          app-level nav above already carries the identity row). */}
+      <div className="shrink-0 flex items-center gap-2 px-3 h-9 border-b border-ag-line1 bg-ag-bg1">
         <select
           value={bookId ?? ''}
           onChange={(e) => selectBook(e.target.value)}
-          className="ag-focus-ring text-caption bg-ag-bg2 border border-ag-line2 rounded-btn px-2 py-1 max-w-[190px] truncate"
+          className="ag-focus-ring text-caption bg-ag-bg2 border border-ag-line2 rounded-btn px-2 py-0.5 max-w-[190px] truncate"
           aria-label={t('workbench.selectBook')}
         >
           <option value="" disabled>{t('workbench.selectBook')}</option>
           {books.map((b) => <option key={b.id} value={b.id}>{b.title}</option>)}
         </select>
-        <div className="w-px h-5 bg-ag-line2 shrink-0" />
-        <Button size="sm" onClick={() => goPage(pageNo - 1)} disabled={!total || pageNo <= 1}>‹</Button>
+        <div className="w-px h-4 bg-ag-line2 shrink-0" />
+        <button
+          onClick={() => goPage(pageNo - 1)}
+          disabled={!total || pageNo <= 1}
+          className="ag-focus-ring w-6 h-6 grid place-items-center text-caption text-ag-ink2 rounded-btn border border-transparent hover:border-ag-line2 hover:text-ag-ink1 disabled:opacity-40"
+          aria-label="上一页"
+        >‹</button>
         <span className="ag-mono text-caption text-ag-ink2 whitespace-nowrap">{pageNo} / {total || '–'}</span>
-        <Button size="sm" onClick={() => goPage(pageNo + 1)} disabled={!total || pageNo >= total}>›</Button>
+        <button
+          onClick={() => goPage(pageNo + 1)}
+          disabled={!total || pageNo >= total}
+          className="ag-focus-ring w-6 h-6 grid place-items-center text-caption text-ag-ink2 rounded-btn border border-transparent hover:border-ag-line2 hover:text-ag-ink1 disabled:opacity-40"
+          aria-label="下一页"
+        >›</button>
+        <div className="w-px h-4 bg-ag-line2 shrink-0" />
         <span className="text-caption text-ag-ink3 whitespace-nowrap">{t('workbench.window')}</span>
         <select
           value={windowSize}
           onChange={(e) => setWindowSize(Number(e.target.value))}
-          className="ag-focus-ring text-caption bg-ag-bg2 border border-ag-line2 rounded-btn px-1.5 py-1"
+          className="ag-focus-ring text-caption bg-ag-bg2 border border-ag-line2 rounded-btn px-1 py-0.5"
           aria-label={t('workbench.window')}
         >
           {[1, 2, 3].map((n) => <option key={n} value={n}>{n}</option>)}
@@ -594,7 +607,7 @@ export default function Workbench() {
                   key={k}
                   onClick={() => setLeftTab(k)}
                   aria-selected={leftTab === k}
-                  className={`ag-focus-ring flex-1 py-2 text-caption border-b-2 transition-colors ${
+                  className={`ag-focus-ring flex-1 py-1.5 text-caption border-b-2 transition-colors ${
                     leftTab === k ? 'border-ag-cinnabar text-ag-ink1 font-medium' : 'border-transparent text-ag-ink3 hover:text-ag-ink1'
                   }`}
                 >

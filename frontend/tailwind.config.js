@@ -75,7 +75,7 @@ export default {
         xl: '10px', '2xl': '10px',
       },
       spacing: {
-        topbar: '52px', tab: '40px', gutter: '24px', well: '20px', mat: '12px',
+        topbar: '44px', tab: '40px', gutter: '24px', well: '20px', mat: '12px',
         rightx: '28px', righty: '24px', card: '12px', cardgap: '8px', inspector: '320px',
       },
       maxWidth: { page: '720px', measure: '38em' },
