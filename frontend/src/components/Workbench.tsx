@@ -11,7 +11,7 @@ import PageTextEditor from './PageTextEditor'
 import { useLongTask } from '../hooks/useLongTask'
 import {
   QuoteStrip, PageViewer, LayoutBar, LongTaskStatus, UndoToast,
-  MergePreview, RelationNote, ConfirmedSummary,
+  MergePreview, RelationNote, ConfirmedSummary, FormulaStrip,
 } from './workbench/WorkbenchPanels'
 import BookStructurePanel from './workbench/BookStructurePanel'
 
@@ -669,6 +669,9 @@ export default function Workbench() {
                     onToggle={setStructuredText}
                     onRelayout={() => void doRelayout()}
                   />
+                  {structuredText && page.layout && (
+                    <FormulaStrip layout={page.layout} />
+                  )}
                   <div className="flex-1 min-h-0">
                     <PageTextEditor
                       text={structuredText ? (page.layout_text || page.text) : page.text}

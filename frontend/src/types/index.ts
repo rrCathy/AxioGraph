@@ -77,9 +77,30 @@ export interface LayoutBlock {
   origin?: string
   bbox?: [number, number, number, number]
   font_size?: number
+  /** LaTeX recognized from the formula image (local ONNX engine). */
+  latex?: string | null
+  latex_source?: string
+  /** Heading text this block lives under (reading-order nearest heading). */
+  section?: string
+  /** Prose block whose text-layer rows use TeX math fonts. */
+  has_math?: boolean
+}
+
+export interface FormulaItem {
+  no: string
+  block: number
+  bbox: number[] | null
+  where: 'formula' | 'prose'
+}
+
+export interface FormulaRef {
+  ref: string
+  block: number
+  context: string
 }
 
 export interface PageLayout {
+  version?: number
   page_no: number
   page_kind: 'text_layer' | 'scanned_ocr' | 'scanned_image' | 'low_quality_text' | 'mixed_ocr'
   text_source?: string
@@ -88,6 +109,11 @@ export interface PageLayout {
   figure_boxes: number[][]
   figure_labels: string[]
   formula_numbers: string[]
+  formula_items?: FormulaItem[]
+  formula_refs?: FormulaRef[]
+  formula_recognized?: number
+  formula_total?: number
+  math_lines?: number
   blocks: LayoutBlock[]
   counts: Record<string, number>
   layout_text?: string

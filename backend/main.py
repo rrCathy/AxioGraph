@@ -24,6 +24,25 @@ app.include_router(structure.router)
 @app.on_event("startup")
 async def on_startup():
     init_db()
+    _warm_engines()
+
+
+def _warm_engines() -> None:
+    """Pre-load the local ONNX engines (layout, OCR, LaTeX formula) in a
+    background thread so the first page request does not pay ~10 s of model
+    initialization all at once."""
+    import threading
+
+    def warm():
+        try:
+            import local_recognize as LR
+            LR.layout_model()
+            LR.ocr_engine()
+            LR.latex_engine()
+        except Exception:
+            pass  # engines load lazily on first use if warm-up fails
+
+    threading.Thread(target=warm, name="engine-warmup", daemon=True).start()
 
 
 @app.get("/api/health")

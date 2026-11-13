@@ -121,11 +121,18 @@ def c_pages():
 
 
 def c_page_detail():
-    _, body = get(f"{BACKEND}/api/books/{PAGE_BOOK}/pages/1")
+    # First hit may build the typed layout from scratch (layout model + OCR +
+    # LaTeX engines) — allow a generous cold-start budget.
+    _, body = get(f"{BACKEND}/api/books/{PAGE_BOOK}/pages/1", timeout=90)
     d = json.loads(body)
     assert d.get("page_width") and isinstance(d.get("blocks"), list), "missing bbox data"
-    return (f"page 1: {d['char_count']} chars, {len(d['blocks'])} blocks, "
-            f"{d['page_width']:.0f}pt wide")
+    lay = d.get("layout") or {}
+    f = (lay.get("formula_recognized"), lay.get("formula_total"))
+    detail = (f"page 1: {d['char_count']} chars, {len(d['blocks'])} blocks, "
+              f"{d['page_width']:.0f}pt wide")
+    if lay:
+        detail += f", layout v{lay.get('version')}, formulas {f[0]}/{f[1]}"
+    return detail
 
 
 def c_render():

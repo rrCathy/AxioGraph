@@ -6,6 +6,7 @@ import type { ConfirmedNode, TextBlock, PageLayout } from '../../types'
 import type { LongTaskState } from '../../hooks/useLongTask'
 import { pageImageUrl } from '../../services/api'
 import { useI18n } from '../../i18n/useI18n'
+import MathContent from '../MathContent'
 
 export type ZoomMode = 'fitw' | 'fitp' | 'orig'
 
@@ -72,6 +73,13 @@ export function LayoutBar({
       {(c.FIGURE ?? 0) > 0 && (
         <span className="text-micro text-ag-ink3">{t('workbench.layoutFigures')}</span>
       )}
+      {layout.formula_total != null && layout.formula_total > 0 && (
+        <span className="ag-mono text-micro text-ag-ink3">
+          {t('workbench.formulaStrip')
+            .replace('{r}', String(layout.formula_recognized ?? 0))
+            .replace('{n}', String(layout.formula_total))}
+        </span>
+      )}
       <div className="ml-auto flex items-center gap-1">
         <button
           onClick={() => onToggle(true)}
@@ -96,6 +104,37 @@ export function LayoutBar({
           {t('workbench.layoutNeedsVision')}
         </div>
       )}
+    </div>
+  )
+}
+
+/** KaTeX preview of the page's formula blocks that carry locally-recognized
+ *  LaTeX — lets the human cross-check the recognition against the original
+ *  page before confirming candidates. */
+export function FormulaStrip({ layout }: { layout: PageLayout }) {
+  const { t } = useI18n()
+  const formulas = (layout.blocks || []).filter(
+    (b) => b.type === 'FORMULA' && b.latex,
+  )
+  if (formulas.length === 0) return null
+  return (
+    <div
+      className="shrink-0 border-b border-ag-line1 bg-ag-bg2 px-3 py-2 overflow-auto"
+      style={{ maxHeight: '24%' }}
+    >
+      <div className="text-caption text-ag-ink3 mb-1 ag-mono">
+        {t('workbench.formulaStrip')
+          .replace('{r}', String(layout.formula_recognized ?? formulas.length))
+          .replace('{n}', String(layout.formula_total ?? formulas.length))}
+      </div>
+      <div className="flex flex-col gap-1">
+        {formulas.map((b, i) => (
+          <div key={i} className="flex items-start gap-2 min-w-0">
+            <span className="ag-quote-index shrink-0">[{i + 1}]</span>
+            <MathContent text={`$$${b.latex}$$`} className="min-w-0" />
+          </div>
+        ))}
+      </div>
     </div>
   )
 }

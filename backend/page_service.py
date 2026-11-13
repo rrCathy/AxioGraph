@@ -139,7 +139,8 @@ def get_page(book_id: str, page_no: int) -> dict | None:
 
 def ensure_layout(book_id: str, page_no: int) -> dict | None:
     """Lazily build and cache the typed layout for one page. Layout is derived
-    from the PDF, so it never depends on a possibly-edited flat text dump."""
+    from the PDF, so it never depends on a possibly-edited flat text dump.
+    Cached layouts from older pipeline versions are rebuilt transparently."""
     import page_layout as L  # local import: page_layout imports this module
 
     conn = get_db()
@@ -152,7 +153,9 @@ def ensure_layout(book_id: str, page_no: int) -> dict | None:
         return None
     if row["layout_json"]:
         try:
-            return json.loads(row["layout_json"])
+            cached = json.loads(row["layout_json"])
+            if cached.get("version") == L.LAYOUT_VERSION:
+                return cached
         except (ValueError, TypeError):
             pass
     try:

@@ -29,6 +29,9 @@ scripts/diagnose_output.txt
 *.traineddata
 *.traineddata.gz
 
+# Local ONNX model weights (LaTeX formula OCR)
+backend/models/
+
 # Large local test fixtures: keep on disk, not in git
 tests/*.pdf
 
