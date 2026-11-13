@@ -68,7 +68,7 @@
   font-family: 'AG Reading', Inter, 'Source Han Serif SC', 'Noto Serif SC',
                'Songti SC', SimSun, serif;
   font-size: var(--ag-editor-fs, 15px);  /* user-set via the editor toolbar */
-  line-height: 1.85;
+  line-height: 1.7;
   letter-spacing: .01em;
   color: var(--ag-ink-1);
   min-height: 100%;

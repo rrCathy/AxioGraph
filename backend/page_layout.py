@@ -152,7 +152,7 @@ def _looks_mathish(text: str) -> bool:
     return len(words) >= 2 and singles / len(words) >= 0.6
 
 
-LAYOUT_VERSION = 3
+LAYOUT_VERSION = 4
 
 
 def build_layout(book_id: str, page_no: int) -> dict:
@@ -387,7 +387,7 @@ def render_layout_text(layout: dict, include_figure: bool = False) -> str:
             out.append("[FIGURE] " + b["text"])
         else:
             out.append("[P] " + b["text"])
-    return "\n\n".join(out)
+    return "\n".join(out)
 
 
 def to_storage(layout: dict, include_figure: bool = False) -> tuple[str, str]:

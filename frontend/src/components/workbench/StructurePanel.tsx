@@ -208,50 +208,44 @@ export default function StructurePanel({ bookId, refreshKey = 0, onJump, onConfi
         ) : (
           <>
             <div className="shrink-0 flex items-center gap-1 px-1 py-1 text-micro text-ag-ink3 ag-mono border-b border-ag-line1">
-              <span className="w-9 shrink-0">{t('workbench.structLevel')}</span>
+              <span className="w-11 shrink-0">{t('workbench.structNo')}</span>
               <span className="flex-1">{t('workbench.structTitle')}</span>
-              <span className="w-12 shrink-0 text-right">{t('workbench.structBookPage')}</span>
-              <span className="w-12 shrink-0 text-right">{t('workbench.structPdfPage')}</span>
-              <span className="w-10 shrink-0" />
+              <span className="w-11 shrink-0 text-right">{t('workbench.structBookPage')}</span>
+              <span className="w-11 shrink-0 text-right">{t('workbench.structPdfPage')}</span>
+              <span className="w-9 shrink-0" />
             </div>
             <div className="flex-1 min-h-0 overflow-auto">
               {toc.map((it, idx) => (
                 <div key={idx} className="flex items-center gap-1 px-1 py-0.5 border-b border-ag-line1 last:border-b-0">
-                  <select
-                    value={it.level}
-                    onChange={(e) => updateItem(idx, { level: Number(e.target.value) })}
-                    className={`${inputCls} w-9 shrink-0 px-0.5`}
-                    aria-label={t('workbench.structLevel')}
-                  >
-                    {[1, 2, 3].map((n) => <option key={n} value={n}>{n}</option>)}
-                  </select>
+                  <span className="w-11 shrink-0 ag-mono text-micro text-ag-ink3 truncate" title={it.no ?? ''}>
+                    {it.no || '·'}
+                  </span>
                   <input
                     value={it.title}
                     onChange={(e) => updateItem(idx, { title: e.target.value })}
-                    className={`${inputCls} flex-1`}
-                    style={{ marginLeft: (it.level - 1) * 10 }}
+                    className="ag-focus-ring bg-ag-bg2 border border-ag-line2 rounded-btn px-1 py-0.5 text-micro text-ag-ink1 min-w-0 flex-1"
                   />
                   <input
                     type="number"
                     value={it.book_page ?? ''}
                     onChange={(e) => updateItem(idx, { book_page: e.target.value === '' ? null : Number(e.target.value) })}
-                    className={`${inputCls} w-12 shrink-0 text-right`}
+                    className="ag-focus-ring bg-ag-bg2 border border-ag-line2 rounded-btn px-1 py-0.5 text-micro text-ag-ink1 w-11 shrink-0 text-right"
                   />
                   <input
                     type="number"
                     value={it.pdf_page ?? ''}
                     onChange={(e) => updateItem(idx, { pdf_page: e.target.value === '' ? null : Number(e.target.value) })}
-                    className={`${inputCls} w-12 shrink-0 text-right`}
+                    className="ag-focus-ring bg-ag-bg2 border border-ag-line2 rounded-btn px-1 py-0.5 text-micro text-ag-ink1 w-11 shrink-0 text-right"
                   />
                   {it.pdf_page != null && it.pdf_page > 0 ? (
                     <button
                       onClick={() => onJump(it.pdf_page!)}
-                      className="ag-focus-ring w-10 shrink-0 text-micro text-ag-cinnabar hover:underline"
+                      className="ag-focus-ring w-9 shrink-0 text-micro text-ag-cinnabar hover:underline"
                     >
                       {t('workbench.structJump')}
                     </button>
                   ) : (
-                    <span className="w-10 shrink-0" />
+                    <span className="w-9 shrink-0" />
                   )}
                 </div>
               ))}
@@ -260,28 +254,25 @@ export default function StructurePanel({ bookId, refreshKey = 0, onJump, onConfi
         )}
       </div>
 
-      {/* metadata + commit row — compact, single screen */}
-      <div className="shrink-0 border-t border-ag-line1 px-2 py-1.5 flex flex-col gap-1.5">
-        <div className="grid grid-cols-[auto_1fr_auto_1fr] items-center gap-x-1.5 gap-y-1 text-caption text-ag-ink3">
+      {/* metadata + commit footer — three tight rows, never overflows */}
+      <div className="shrink-0 border-t border-ag-line1 px-2 py-1.5 flex flex-col gap-1">
+        <div className="flex items-center gap-1.5 text-caption text-ag-ink3 min-w-0">
           <span className="shrink-0">{t('workbench.structTitle')}</span>
           <input value={title} onChange={(e) => setTitle(e.target.value)} className={inputCls} />
           <span className="shrink-0">{t('workbench.structAuthor')}</span>
           <input value={author} onChange={(e) => setAuthor(e.target.value)} className={inputCls} />
         </div>
-        <div className="flex items-center gap-1.5 text-caption text-ag-ink3">
+        <div className="flex items-center gap-1.5 text-caption text-ag-ink3 whitespace-nowrap">
           <span className="shrink-0">{t('workbench.structOffset')}</span>
           <input
             value={offset}
             onChange={(e) => setOffset(e.target.value)}
             placeholder={t('workbench.structOffsetNone')}
-            className={`${inputCls} w-16`}
+            className={`${inputCls} w-14`}
           />
           <Button size="sm" variant="ghost" onClick={applyOffset}>{t('workbench.structApplyOffset')}</Button>
           {st?.offset_confidence != null && st.offset_confidence > 0 && (
             <span className="ag-mono text-micro">×{st.offset_confidence}</span>
-          )}
-          {st?.confirmed && (
-            <span className="ml-auto text-caption text-ag-statusConfirmed">✓✓ {t('workbench.structConfirmed')}</span>
           )}
         </div>
         <div className="flex items-center gap-1.5">
