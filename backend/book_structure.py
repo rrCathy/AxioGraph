@@ -397,6 +397,8 @@ def parse_toc_page(book_id: str, page_no: int) -> dict:
         for it in items:
             if it["book_page"] is not None:
                 it["pdf_page"] = it["book_page"] + offset
+    # Top level only — same contract as detect.
+    items = [it for it in items if it.get("level", 1) <= 1]
     return {"ok": True, "page_no": page_no, "items": items}
 
 
@@ -491,7 +493,8 @@ def detect_structure(book_id: str, task_id: str | None = None) -> dict:
     if is_cancelled(task_id):
         return {"cancelled": True}
 
-    # Offset detection against the page text layer.
+    # Offset detection against the page text layer (uses ALL parsed levels:
+    # section titles anchor the offset far more often than chapter titles).
     if result["toc"] and any(it.get("book_page") is not None for it in result["toc"]):
         page_texts = _page_texts_from_db(book_id)
         offset, confidence = _detect_offset(page_texts, result["toc"])
@@ -501,6 +504,11 @@ def detect_structure(book_id: str, task_id: str | None = None) -> dict:
             for it in result["toc"]:
                 if it["pdf_page"] is None and it["book_page"] is not None:
                     it["pdf_page"] = it["book_page"] + offset
+
+    # The saved outline keeps only TOP-LEVEL entries — chapters and the
+    # front-matter items (title / preface / contents) that sit beside them.
+    # Deeper levels were parsing fuel for the offset, not structure.
+    result["toc"] = [it for it in result["toc"] if it.get("level", 1) <= 1]
 
     # Cover fallback for title/author when metadata is empty: try the first
     # page's text layer locally (no model) before spending a vision call.
