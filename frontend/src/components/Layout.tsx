@@ -11,7 +11,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   }, [])
 
   return (
-    <div className="min-h-screen w-full flex flex-col bg-ag-bg0 text-ag-ink1 antialiased">
+    <div className="h-screen w-full flex flex-col bg-ag-bg0 text-ag-ink1 antialiased overflow-hidden">
       <main className="flex-1 min-h-0 flex flex-col relative">{children}</main>
       <AriaLive />
     </div>

@@ -13,10 +13,11 @@ import {
   QuoteStrip, PageViewer, LayoutBar, LongTaskStatus, UndoToast,
   MergePreview, RelationNote, ConfirmedSummary,
 } from './workbench/WorkbenchPanels'
-import BookStructurePanel from './workbench/BookStructurePanel'
-import TocPanel from './workbench/TocPanel'
+import StructurePanel from './workbench/StructurePanel'
+import TocList from './workbench/TocList'
 
 type RightTab = 'text' | 'candidates'
+type LeftTab = 'nav' | 'toc' | 'structure'
 
 interface UndoState { label: string; run: () => void }
 
@@ -42,12 +43,13 @@ export default function Workbench() {
   const [pendingPage, setPendingPage] = useState<number | null>(null)
   const [confirmReimport, setConfirmReimport] = useState(false)
   const [mergeTarget, setMergeTarget] = useState<{ candidateId: string; nodeId: string } | null>(null)
-  const [narrow, setNarrow] = useState(() => window.innerWidth < 1024)
+  const [narrow, setNarrow] = useState(() => window.innerWidth < 1200)
   const [narrowView, setNarrowView] = useState<'page' | 'text'>('text')
 
-  // Book structure panel + TOC sidebar + auto mode
-  const [structureOpen, setStructureOpen] = useState(false)
-  const [tocOpen, setTocOpen] = useState(false)
+  // Left function column: tab + narrow-screen drawer visibility
+  const [leftTab, setLeftTab] = useState<LeftTab>('nav')
+  const [funcOpen, setFuncOpen] = useState(false)
+  const [structRefreshKey, setStructRefreshKey] = useState(0)
   const [autoOpen, setAutoOpen] = useState(false)
   const [autoStatus, setAutoStatus] = useState<AutoStatus | null>(null)
   const autoStatusRef = useRef<AutoStatus | null>(null)
@@ -67,7 +69,7 @@ export default function Workbench() {
   const endPage = Math.min(pageNo + windowSize - 1, total || pageNo)
 
   useEffect(() => {
-    const onResize = () => setNarrow(window.innerWidth < 1024)
+    const onResize = () => setNarrow(window.innerWidth < 1200)
     window.addEventListener('resize', onResize)
     return () => window.removeEventListener('resize', onResize)
   }, [])
@@ -519,7 +521,7 @@ export default function Workbench() {
 
   return (
     <div className="relative flex flex-col h-full min-h-0">
-      <div className="shrink-0 flex items-center gap-2.5 px-4 h-topbar border-b border-ag-line1 bg-ag-bg1 overflow-x-auto">
+      <div className="shrink-0 flex items-center gap-2.5 px-4 h-topbar border-b border-ag-line1 bg-ag-bg1">
         <select
           value={bookId ?? ''}
           onChange={(e) => selectBook(e.target.value)}
@@ -543,120 +545,21 @@ export default function Workbench() {
           {[1, 2, 3].map((n) => <option key={n} value={n}>{n}</option>)}
         </select>
         <span className="ag-mono text-micro text-ag-ink3 whitespace-nowrap">p{pageNo}–p{endPage}</span>
-        <Button size="sm" variant="primary" disabled={!bookId || !total || task.active} onClick={() => void analyze()}>
-          {t('workbench.analyze')}
-        </Button>
-        <Button size="sm" disabled={!bookId || !total || task.active} onClick={() => void runVisionOcr()}>
-          {t('workbench.visionOcr')}
-        </Button>
-        <Button size="sm" disabled={!bookId || !total || task.active} onClick={() => void runOcr()}>
-          {t('workbench.ocr')}
-        </Button>
-        <Button size="sm" disabled={!bookId || !total} onClick={() => setAutoOpen(!autoOpen)}>
-          {t('workbench.autoTitle')}
-        </Button>
-        <Button size="sm" variant="ghost" disabled={!bookId} onClick={() => setTocOpen(!tocOpen)}>
-          {t('workbench.toc')}
-        </Button>
-        <Button size="sm" variant="ghost" disabled={!bookId || task.active} onClick={() => setStructureOpen(true)}>
-          {t('workbench.structure')}
-        </Button>
-        <Button size="sm" variant="ghost" disabled={!bookId || task.active} onClick={() => setConfirmReimport(true)}>
-          {t('workbench.reimport')}
-        </Button>
-        {page && <StatusBadge status={page.status} />}
-        {msg && <span className="ml-auto text-caption text-ag-ink3 truncate max-w-[260px]">{msg}</span>}
+        <div className="ml-auto flex items-center gap-2 min-w-0">
+          {page && <StatusBadge status={page.status} />}
+          {msg && <span className="text-caption text-ag-ink3 truncate max-w-[240px]">{msg}</span>}
+          {narrow && (
+            <Button size="sm" variant="ghost" onClick={() => setFuncOpen(!funcOpen)} aria-label={t('workbench.funcTitle')}>
+              ☰
+            </Button>
+          )}
+        </div>
       </div>
 
       {task.active && (
         <LongTaskStatus state={task} elapsedLabel={elapsedLabel} onCancel={cancelRunningTask} />
       )}
 
-      {autoOpen && (
-        <div className="shrink-0 flex items-center gap-2 px-3 py-1.5 border-b border-ag-line1 bg-ag-bg2 flex-wrap">
-          <span className="text-caption text-ag-ink2">{t('workbench.autoTitle')}</span>
-          {autoChapters && (
-            <select
-              defaultValue=""
-              onChange={(e) => onChapterSelect(e.target.value)}
-              className="ag-focus-ring text-caption bg-ag-bg3 border border-ag-line2 rounded-btn px-2 py-1 max-w-[220px] truncate"
-              aria-label={t('workbench.autoChapter')}
-            >
-              <option value="" disabled>{t('workbench.autoChapter')}</option>
-              {autoChapters.map((c, i) => (
-                <option key={i} value={i}>
-                  {'\u3000'.repeat(Math.max(0, c.level - 1))}{c.title} (p{c.pdf_page})
-                </option>
-              ))}
-            </select>
-          )}
-          <span className="text-caption text-ag-ink3">{t('workbench.autoRangeFrom')}</span>
-          <input
-            type="number" min={1} max={total || undefined} value={autoRange.start}
-            onChange={(e) => setAutoRange((r) => ({ ...r, start: Number(e.target.value) }))}
-            className="ag-focus-ring text-caption ag-mono bg-ag-bg3 border border-ag-line2 rounded-btn px-1.5 py-1 w-16"
-            aria-label={t('workbench.autoRangeFrom')}
-          />
-          <span className="text-caption text-ag-ink3">{t('workbench.autoRangeTo')}</span>
-          <input
-            type="number" min={1} max={total || undefined} value={autoRange.end}
-            onChange={(e) => setAutoRange((r) => ({ ...r, end: Number(e.target.value) }))}
-            className="ag-focus-ring text-caption ag-mono bg-ag-bg3 border border-ag-line2 rounded-btn px-1.5 py-1 w-16"
-            aria-label={t('workbench.autoRangeTo')}
-          />
-          <select
-            value={autoWindowSize}
-            onChange={(e) => setAutoWindowSize(Number(e.target.value))}
-            className="ag-focus-ring text-caption bg-ag-bg3 border border-ag-line2 rounded-btn px-1.5 py-1"
-            aria-label={t('workbench.window')}
-          >
-            {[1, 2, 3].map((n) => <option key={n} value={n}>{n}</option>)}
-          </select>
-          {autoStatus?.status === 'running' ? (
-            <>
-              <span className="text-caption text-ag-ink2 ag-mono" aria-live="polite">
-                {t('workbench.autoProgress')
-                  .replace('{done}', String(Math.min(autoStatus.window_done + 1, autoStatus.window_total)))
-                  .replace('{total}', String(autoStatus.window_total))}
-              </span>
-              {autoStatus.current_window && (
-                <span className="text-caption text-ag-ink3 ag-mono">
-                  {t('workbench.autoCurrent')
-                    .replace('{s}', String(autoStatus.current_window[0]))
-                    .replace('{e}', String(autoStatus.current_window[1]))}
-                </span>
-              )}
-              {autoStatus.failed_windows.length > 0 && (
-                <span className="text-caption text-ag-statusOcr">
-                  {t('workbench.autoFailed').replace('{n}', String(autoStatus.failed_windows.length))}
-                </span>
-              )}
-              <Button size="sm" onClick={stopAuto}>{t('workbench.autoStop')}</Button>
-            </>
-          ) : (
-            <>
-              <Button size="sm" variant="primary" disabled={!bookId || !total} onClick={() => void startAuto(autoRange.start, autoRange.end)}>
-                {t('workbench.autoStart')}
-              </Button>
-              {autoStatus && (autoStatus.status === 'cancelled' || autoStatus.status === 'error') && autoStatus.next_window != null && (
-                <Button size="sm" onClick={() => void startAuto(autoStatus.next_window!, autoStatus.range[1])}>
-                  {t('workbench.autoResume')}
-                </Button>
-              )}
-              {autoStatus && autoStatus.failed_windows.length > 0 && (
-                <span className="text-caption text-ag-statusOcr">
-                  {t('workbench.autoFailed').replace('{n}', String(autoStatus.failed_windows.length))}
-                </span>
-              )}
-              {autoStatus && autoStatus.status === 'done' && (
-                <span className="text-caption text-ag-ink3 ag-mono">
-                  {autoStatus.window_done}/{autoStatus.window_total}
-                </span>
-              )}
-            </>
-          )}
-        </div>
-      )}
 
       {narrow && (
         <div className="shrink-0 flex border-b border-ag-line1 bg-ag-bg1">
@@ -673,8 +576,194 @@ export default function Workbench() {
       )}
 
       <div className="flex-1 flex min-h-0">
+      {/* Left function column — docked on wide screens, drawer on narrow. */}
+      {(!narrow || funcOpen) && (
+        <>
+          {narrow && funcOpen && (
+            <div className="absolute inset-0 z-30 bg-black/40" onClick={() => setFuncOpen(false)} aria-hidden="true" />
+          )}
+          <aside
+            className={narrow
+              ? 'absolute left-0 top-0 bottom-0 z-40 w-[300px] border-r border-ag-line2 bg-ag-bg1'
+              : 'shrink-0 w-[300px] border-r border-ag-line1 bg-ag-bg1 flex flex-col min-h-0'}
+            aria-label={t('workbench.funcTitle')}
+          >
+            <div className="shrink-0 flex items-center border-b border-ag-line1">
+              {([['nav', t('workbench.funcNav')], ['toc', t('workbench.tocTitle')], ['structure', t('workbench.structure')]] as [LeftTab, string][]).map(([k, label]) => (
+                <button
+                  key={k}
+                  onClick={() => setLeftTab(k)}
+                  aria-selected={leftTab === k}
+                  className={`ag-focus-ring flex-1 py-2 text-caption border-b-2 transition-colors ${
+                    leftTab === k ? 'border-ag-cinnabar text-ag-ink1 font-medium' : 'border-transparent text-ag-ink3 hover:text-ag-ink1'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+              {narrow && (
+                <button
+                  onClick={() => setFuncOpen(false)}
+                  className="ag-focus-ring shrink-0 px-3 py-2 text-caption text-ag-ink3 hover:text-ag-ink1"
+                  aria-label={t('workbench.structClose')}
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+
+            <div className="flex-1 min-h-0 flex flex-col">
+              {leftTab === 'nav' && (
+                <div className="flex-1 min-h-0 flex flex-col overflow-auto">
+                  <div className="shrink-0 flex flex-col gap-1.5 px-2.5 py-2.5">
+                    <Button
+                      variant="primary"
+                      className="w-full"
+                      disabled={!bookId || !total || task.active}
+                      onClick={() => void analyze()}
+                    >
+                      {t('workbench.analyze')}
+                    </Button>
+                    <div className="grid grid-cols-2 gap-1.5">
+                      <Button size="sm" disabled={!bookId || !total || task.active} onClick={() => void runVisionOcr()}>
+                        {t('workbench.visionOcr')}
+                      </Button>
+                      <Button size="sm" disabled={!bookId || !total || task.active} onClick={() => void runOcr()}>
+                        {t('workbench.ocr')}
+                      </Button>
+                    </div>
+                    <Button
+                      size="sm"
+                      variant={autoOpen ? 'primary' : 'ghost'}
+                      disabled={!bookId || !total}
+                      onClick={() => setAutoOpen(!autoOpen)}
+                    >
+                      {autoOpen ? t('workbench.autoClose') : t('workbench.autoTitle')}
+                    </Button>
+                    <Button size="sm" variant="ghost" disabled={!bookId || task.active} onClick={() => setConfirmReimport(true)}>
+                      {t('workbench.reimport')}
+                    </Button>
+                  </div>
+
+                  {autoOpen && (
+                    <div className="shrink-0 mx-2.5 mb-2.5 rounded-card border border-ag-line2 bg-ag-bg2 p-2.5 flex flex-col gap-2">
+                      <span className="text-caption font-medium text-ag-ink2">{t('workbench.autoTitle')}</span>
+                      {autoChapters && (
+                        <select
+                          defaultValue=""
+                          onChange={(e) => onChapterSelect(e.target.value)}
+                          className="ag-focus-ring text-caption bg-ag-bg3 border border-ag-line2 rounded-btn px-2 py-1 w-full min-w-0 truncate"
+                          aria-label={t('workbench.autoChapter')}
+                        >
+                          <option value="" disabled>{t('workbench.autoChapter')}</option>
+                          {autoChapters.map((c, i) => (
+                            <option key={i} value={i}>
+                              {'\u3000'.repeat(Math.max(0, c.level - 1))}{c.title} (p{c.pdf_page})
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                      <div className="flex items-center gap-1.5 text-caption text-ag-ink3">
+                        <span className="shrink-0">{t('workbench.autoRangeFrom')}</span>
+                        <input
+                          type="number" min={1} max={total || undefined} value={autoRange.start}
+                          onChange={(e) => setAutoRange((r) => ({ ...r, start: Number(e.target.value) }))}
+                          className="ag-focus-ring text-caption ag-mono bg-ag-bg3 border border-ag-line2 rounded-btn px-1.5 py-1 w-14"
+                          aria-label={t('workbench.autoRangeFrom')}
+                        />
+                        <span className="shrink-0">–</span>
+                        <input
+                          type="number" min={1} max={total || undefined} value={autoRange.end}
+                          onChange={(e) => setAutoRange((r) => ({ ...r, end: Number(e.target.value) }))}
+                          className="ag-focus-ring text-caption ag-mono bg-ag-bg3 border border-ag-line2 rounded-btn px-1.5 py-1 w-14"
+                          aria-label={t('workbench.autoRangeTo')}
+                        />
+                        <select
+                          value={autoWindowSize}
+                          onChange={(e) => setAutoWindowSize(Number(e.target.value))}
+                          className="ag-focus-ring text-caption bg-ag-bg3 border border-ag-line2 rounded-btn px-1 py-1"
+                          aria-label={t('workbench.window')}
+                        >
+                          {[1, 2, 3].map((n) => <option key={n} value={n}>{n}</option>)}
+                        </select>
+                      </div>
+                      {autoStatus?.status === 'running' ? (
+                        <div className="flex flex-col gap-1.5">
+                          <span className="text-caption text-ag-ink2 ag-mono" aria-live="polite">
+                            {t('workbench.autoProgress')
+                              .replace('{done}', String(Math.min(autoStatus.window_done + 1, autoStatus.window_total)))
+                              .replace('{total}', String(autoStatus.window_total))}
+                          </span>
+                          {autoStatus.current_window && (
+                            <span className="text-caption text-ag-ink3 ag-mono">
+                              {t('workbench.autoCurrent')
+                                .replace('{s}', String(autoStatus.current_window[0]))
+                                .replace('{e}', String(autoStatus.current_window[1]))}
+                            </span>
+                          )}
+                          {autoStatus.failed_windows.length > 0 && (
+                            <span className="text-caption text-ag-statusOcr">
+                              {t('workbench.autoFailed').replace('{n}', String(autoStatus.failed_windows.length))}
+                            </span>
+                          )}
+                          <Button size="sm" onClick={stopAuto}>{t('workbench.autoStop')}</Button>
+                        </div>
+                      ) : (
+                        <div className="flex flex-col gap-1.5">
+                          <Button size="sm" variant="primary" disabled={!bookId || !total} onClick={() => void startAuto(autoRange.start, autoRange.end)}>
+                            {t('workbench.autoStart')}
+                          </Button>
+                          {autoStatus && (autoStatus.status === 'cancelled' || autoStatus.status === 'error') && autoStatus.next_window != null && (
+                            <Button size="sm" onClick={() => void startAuto(autoStatus.next_window!, autoStatus.range[1])}>
+                              {t('workbench.autoResume')}
+                            </Button>
+                          )}
+                          {autoStatus && autoStatus.failed_windows.length > 0 && (
+                            <span className="text-caption text-ag-statusOcr">
+                              {t('workbench.autoFailed').replace('{n}', String(autoStatus.failed_windows.length))}
+                            </span>
+                          )}
+                          {autoStatus && autoStatus.status === 'done' && (
+                            <span className="text-caption text-ag-ink3 ag-mono">
+                              {autoStatus.window_done}/{autoStatus.window_total}
+                            </span>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  <div className="mt-auto px-2.5 pb-2.5 pt-2 text-micro text-ag-ink3 leading-relaxed border-t border-ag-line1">
+                    {t('workbench.funcHint')}
+                  </div>
+                </div>
+              )}
+              {leftTab === 'toc' && (
+                <div className="flex-1 min-h-0 overflow-auto">
+                  <TocList
+                    bookId={bookId ?? ''}
+                    pageNo={pageNo}
+                    refreshKey={structRefreshKey}
+                    onJump={(p) => goPage(Math.max(1, Math.min(p, total || p)))}
+                    onOpenStructure={() => setLeftTab('structure')}
+                  />
+                </div>
+              )}
+              {leftTab === 'structure' && (
+                <StructurePanel
+                  bookId={bookId ?? ''}
+                  refreshKey={structRefreshKey}
+                  onJump={(p) => goPage(Math.max(1, Math.min(p, total || p)))}
+                  onConfirmed={() => setStructRefreshKey((k) => k + 1)}
+                />
+              )}
+            </div>
+          </aside>
+        </>
+      )}
+
         {(!narrow || narrowView === 'page') && (
-          <div className={`${narrow ? 'w-full' : 'w-[46%]'} flex flex-col min-w-0 bg-ag-bg0`}>
+          <div className={`${narrow ? 'w-full' : 'flex-1'} flex flex-col min-w-0 bg-ag-bg0`}>
             {bookId && page ? (
               <PageViewer
                 bookId={bookId}
@@ -692,7 +781,7 @@ export default function Workbench() {
         )}
         {!narrow && <div className="ag-gutter" aria-hidden="true" />}
         {(!narrow || narrowView === 'text') && (
-          <div className={`${narrow ? 'w-full' : 'w-[54%]'} flex flex-col min-w-0 bg-ag-bg2`} ref={editorFocusRef}>
+          <div className={`${narrow ? 'w-full' : 'w-[460px] shrink-0'} flex flex-col min-w-0 bg-ag-bg2`} ref={editorFocusRef}>
             <QuoteStrip quote={quoteDraft} onClear={() => setQuoteDraft('')} />
             <div className="shrink-0 flex border-b border-ag-line1 bg-ag-bg1">
               {([['text', t('workbench.textTab')], ['candidates', `${t('workbench.candidates')} (${candidates.length})`]] as const).map(([k, label]) => (
@@ -746,25 +835,6 @@ export default function Workbench() {
       </div>
 
       {undo && <UndoToast label={undo.label} onUndo={() => void undo.run()} />}
-
-      <TocPanel
-        bookId={bookId ?? ''}
-        open={tocOpen && !!bookId}
-        pageNo={pageNo}
-        onClose={() => setTocOpen(false)}
-        onJump={(p) => goPage(Math.max(1, Math.min(p, total || p)))}
-        onOpenStructure={() => { setTocOpen(false); setStructureOpen(true) }}
-      />
-
-      <BookStructurePanel
-        bookId={bookId ?? ''}
-        open={structureOpen && !!bookId}
-        onClose={() => setStructureOpen(false)}
-        onJump={(p) => {
-          setStructureOpen(false)
-          goPage(Math.max(1, Math.min(p, total || p)))
-        }}
-      />
 
       <ConfirmDialog
         open={confirmReimport}

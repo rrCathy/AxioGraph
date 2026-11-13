@@ -41,7 +41,7 @@ export default function UploadBook() {
   }
 
   return (
-    <div>
+    <div className="h-full overflow-auto">
       <div
         onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
         onDragLeave={() => setDragOver(false)}
