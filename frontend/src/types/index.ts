@@ -171,6 +171,8 @@ export interface ConfirmedNode {
 
 export interface TocItem {
   level: number
+  /** Entry number like "1" / "1.1" when the TOC carries one (local parser). */
+  no?: string | null
   title: string
   book_page: number | null
   pdf_page: number | null

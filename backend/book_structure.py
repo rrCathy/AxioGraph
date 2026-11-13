@@ -34,7 +34,8 @@ MAX_VISION_TOC_PROBES = 6
 TOC_ANCHOR_RE = re.compile(r"^\s*(目\s*录|目\s*次|contents|table of contents)\s*$", re.I)
 _NUM_ONLY_RE = re.compile(r"^\d{1,4}$")
 _DOTTED_NO_RE = re.compile(r"^\d{1,3}(?:\.\d{1,2}){1,2}$")
-_LEAD_NO_RE = re.compile(r"^(\d{1,3}(?:\.\d{1,2}){0,2})\s*(.*\S)")
+_LEAD_NO_SP_RE = re.compile(r"^(\d{1,3}(?:\.\d{1,2}){0,2})\s+(.*\S)")
+_LEAD_NO_GLUE_RE = re.compile(r"^(\d{1,3}(?:\.\d{1,2}){1,2})([^\d.\s].*)$")
 _TAIL_PAGE_RE = re.compile(r"^(.*\S)\s+(\d{1,4})$")
 _DOTS_RE = re.compile(r"(?:\.\s*){3,}|[.·…]{4,}")
 
@@ -72,14 +73,15 @@ def _page_toc_text(page) -> str:
     return page.get_text("text") or ""
 
 
-def _local_toc_items(text: str) -> list[dict]:
+def _local_toc_items(text: str, max_ch: int = 0) -> tuple[list[dict], int]:
     """Parse a text-layer TOC page WITHOUT any model.
 
     LaTeX-style TOCs come out of the text layer as a token stream — entry
     number line, title line(s), dot-leader line, page-number line (or the
     whole entry on one line) — which a small state machine reassembles.
-    Returns [] when the page does not parse as a TOC (fewer than 5 entries),
-    so callers can fall back to vision.
+    `max_ch` carries the highest plausible chapter number across multi-page
+    TOCs and is returned updated. Returns ([], max_ch) when the page does
+    not parse as a TOC (fewer than 5 entries) so callers can fall back.
     """
     lines = [l.strip() for l in (text or "").splitlines()]
     start = next((i for i, l in enumerate(lines) if TOC_ANCHOR_RE.match(l)), -1)
@@ -92,39 +94,53 @@ def _local_toc_items(text: str) -> list[dict]:
         tail_nums = sum(1 for l in tokens
                         if not _NUM_ONLY_RE.match(l) and _TAIL_PAGE_RE.match(_strip_dots(l)))
         if dots < 3 or (nums < 5 and tail_nums < 5):
-            return []
+            return [], max_ch
 
     entries: list[dict] = []
     cur_no, cur_title = "", []
+    # max_ch (parameter) = highest plausible chapter number seen so far;
+    # it guards "60 阶的单群" / "238" style junk and carries across pages.
+
+    def plausible_no(no: str) -> bool:
+        head = int(no.split(".")[0])
+        if head > 200:
+            return False
+        if "." not in no:
+            return head <= max_ch + 1        # chapters run 1, 2, 3, ...
+        return head <= max_ch + 1            # sections live in a known chapter
+
+    prev_page = 0
 
     def finish(page_no: int | None):
-        nonlocal cur_no, cur_title
+        nonlocal cur_no, cur_title, prev_page
         title = _strip_dots(" ".join(t for t in cur_title if t))
-        if title and page_no and page_no <= 5000:
+        # TOC page numbers are monotonically increasing; a wild backwards
+        # jump marks a stray line caught by the state machine.
+        if title and page_no and page_no <= 5000 and page_no >= prev_page * 0.5:
             level = min(3, cur_no.count(".") + 1) if cur_no else 1
-            entries.append({"level": level, "title": title,
+            entries.append({"level": level, "no": cur_no or None, "title": title,
                             "book_page": page_no, "pdf_page": None})
+            if page_no > prev_page:
+                prev_page = page_no
         cur_no, cur_title = "", []
 
     for raw in tokens:
-        line = raw.strip()
+        line = _strip_dots(raw.strip())
         if not line:
             continue
-        if _NUM_ONLY_RE.match(line):               # bare integer
+        if _NUM_ONLY_RE.match(line):               # bare integer (incl. dots+number lines)
             if cur_no and cur_title:
                 finish(int(line))                  # page number completes it
-            elif not cur_no:
+            elif not cur_no and plausible_no(line):
+                max_ch = max(max_ch, int(line))
                 cur_no = line                      # bare chapter number
-            else:
-                cur_no, cur_title = line, []       # stray number: restart
-            continue
-        if _DOTTED_NO_RE.match(line):              # "1.1" / "2.7.4" alone
-            finish(None)
+            continue                               # stray number: page junk
+        if _DOTTED_NO_RE.match(line) and plausible_no(line):
+            finish(None)                           # "1.1" / "2.7.4" alone
+            max_ch = max(max_ch, int(line.split(".")[0]))
             cur_no, cur_title = line, []
             continue
-        clean = _strip_dots(line)
-        if not clean:
-            continue
+        clean = line
         tail_page = None
         pm = _TAIL_PAGE_RE.match(clean)
         if pm and (len(pm.group(2)) <= 3 or int(pm.group(2)) <= 500):
@@ -132,10 +148,11 @@ def _local_toc_items(text: str) -> list[dict]:
             clean = _strip_dots(pm.group(1))
             if not clean:
                 continue
-        m = _LEAD_NO_RE.match(clean)
-        if m and int(m.group(1).split(".")[0]) <= 200:
+        m = _LEAD_NO_SP_RE.match(clean) or _LEAD_NO_GLUE_RE.match(clean)
+        if m and plausible_no(m.group(1)):
             finish(None)                           # unfinished entry: drop
             cur_no, cur_title = m.group(1), [m.group(2)]
+            max_ch = max(max_ch, int(m.group(1).split(".")[0]))
         elif cur_no:
             cur_title.append(clean)
         elif tail_page is None:
@@ -145,7 +162,7 @@ def _local_toc_items(text: str) -> list[dict]:
         if tail_page is not None:
             finish(tail_page)                      # entry closed on same line
     finish(None)
-    return entries if len(entries) >= 5 else []
+    return (entries if len(entries) >= 5 else []), max_ch
 
 
 def _cover_meta_from_text(text: str) -> dict:
@@ -356,7 +373,7 @@ def _vision_toc_items(book_id: str, page_no: int) -> list[dict]:
             level = int(it.get("level", 1))
         except (TypeError, ValueError):
             level = 1
-        items.append({"level": max(1, min(3, level)), "title": title,
+        items.append({"level": max(1, min(3, level)), "no": None, "title": title,
                       "book_page": page, "pdf_page": None})
     return items
 
@@ -372,7 +389,7 @@ def parse_toc_page(book_id: str, page_no: int) -> dict:
     doc.close()
     items: list[dict] = []
     if ps.text_quality(text) >= 0.55:
-        items = _local_toc_items(text)
+        items, _ = _local_toc_items(text)
     if not items:
         items = _vision_toc_items(book_id, page_no)
     offset = (get_structure(book_id) or {}).get("offset")
@@ -407,7 +424,7 @@ def detect_structure(book_id: str, task_id: str | None = None) -> dict:
     if toc_raw:
         result["source"] = "bookmark"
         result["toc"] = [
-            {"level": max(1, min(3, int(lvl))), "title": str(title).replace("\x00", "").strip(),
+            {"level": max(1, min(3, int(lvl))), "no": None, "title": str(title).replace("\x00", "").strip(),
              "book_page": None, "pdf_page": int(page)}
             for lvl, title, page in toc_raw if str(title).replace("\x00", "").strip()
         ]
@@ -417,6 +434,7 @@ def detect_structure(book_id: str, task_id: str | None = None) -> dict:
         # immune to LLM rate limits); vision is only the last resort.
         toc_page_no = None
         toc_page_text = ""
+        seen_ch = 0
         scan = range(1, min(MAX_TOC_SCAN_PAGES, n_pages) + 1)
         for page_no in scan:
             if is_cancelled(task_id):
@@ -426,7 +444,7 @@ def detect_structure(book_id: str, task_id: str | None = None) -> dict:
             text = _page_toc_text(page)
             if ps.text_quality(text) < 0.55:
                 continue
-            local = _local_toc_items(text)
+            local, seen_ch = _local_toc_items(text, seen_ch)
             if local:
                 toc_page_no, toc_page_text = page_no, text
                 break
@@ -449,12 +467,12 @@ def detect_structure(book_id: str, task_id: str | None = None) -> dict:
                     result["toc"] = items
                     break
         else:
-            local = _local_toc_items(toc_page_text)
+            local, seen_ch = _local_toc_items(toc_page_text, seen_ch)
             # TOCs usually span several pages: keep parsing while entries flow.
             page_no = toc_page_no
             while local and page_no - toc_page_no < 10 and page_no < n_pages:
                 page_no += 1
-                more = _local_toc_items(_page_toc_text(doc[page_no - 1]))
+                more, seen_ch = _local_toc_items(_page_toc_text(doc[page_no - 1]), seen_ch)
                 if not more:
                     break
                 local.extend(more)
@@ -544,7 +562,7 @@ def _vision_probe_toc_page(book_id: str, page_no: int) -> list[dict] | None:
             level = int(it.get("level", 1))
         except (TypeError, ValueError):
             level = 1
-        items.append({"level": max(1, min(3, level)), "title": title,
+        items.append({"level": max(1, min(3, level)), "no": None, "title": title,
                       "book_page": page, "pdf_page": None})
     return items or None
 

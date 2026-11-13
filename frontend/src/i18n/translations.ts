@@ -115,6 +115,7 @@ export const t = {
       tocEmpty: '本书还没有目录数据。可在书籍结构中「识别」PDF 书签，或输入目录页码解析文本目录。',
       tocGoStructure: '去书籍结构识别',
       tocNoPage: '该条目暂无可跳转的页码',
+      tocExpand: '展开', tocCollapse: '收起',
     },
   },
   en: {
@@ -235,6 +236,7 @@ export const t = {
       tocEmpty: 'No TOC yet. Detect PDF bookmarks or parse the TOC page in Book Structure.',
       tocGoStructure: 'Open Book Structure',
       tocNoPage: 'No resolvable page for this entry',
+      tocExpand: 'Expand', tocCollapse: 'Collapse',
     },
   },
 } as const
