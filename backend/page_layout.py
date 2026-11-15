@@ -651,10 +651,21 @@ def build_layout(book_id: str, page_no: int, pdf_override: str | None = None) ->
             # which texify reliably mangles. Keep the exemption to labels.
             mathish = (cjk <= 2 and han_ratio <= 0.2 and centered
                        and _looks_mathish(txt))
-            if cjk > 4 or (not _TEX_BRACE_FRAGMENT_RE.search(txt) and not mathish):
+            # A displayed formula with a Chinese ANNOTATION is still a formula:
+            # "V_0 := ∅, ... 如果 α 是极限序数". It carries several assignments
+            # and stays mostly symbolic, while Chinese prose has neither.
+            # Demoting these (AlJabr-1 p28/p31) silently turned whole multi-line
+            # definitions into [P] and skipped LaTeX recognition entirely.
+            annotated_formula = (b.get("origin") == "layout:formula"
+                                 and han_ratio < 0.35
+                                 and ":=" in txt)
+            if not annotated_formula and (
+                    cjk > 4 or (not _TEX_BRACE_FRAGMENT_RE.search(txt) and not mathish)):
                 b["type"] = "P"
                 b["origin"] += "->prose"
                 continue
+            if annotated_formula:
+                b["_annotated"] = True
         if not LR.latex_valid(b.get("latex") or "") and not _looks_mathish(b["text"]):
             b["type"] = "P"                      # diagram label / stray line
             b["origin"] += "->demoted"
@@ -697,6 +708,14 @@ def build_layout(book_id: str, page_no: int, pdf_override: str | None = None) ->
             b["latex"] = latex
             b["latex_source"] = "latex-ocr"
             formula_recognized += 1
+
+    # An annotated formula whose LaTeX still failed would only add a coverage
+    # miss; its text-layer characters remain available as prose.
+    for b in blocks:
+        if b.pop("_annotated", False) and b["type"] == "FORMULA" and not b.get("latex"):
+            b["type"] = "P"
+            b["origin"] += "->prose"
+            formula_total -= 1
 
     # ---- equation numbers (positioned) + explicit prose references
     numbers, name_map, named = _formula_anchors(rows)
