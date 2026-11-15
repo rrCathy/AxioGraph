@@ -55,7 +55,7 @@ def _tidy_latex(latex: str) -> str:
     # pix2tex pads short crops with long runs of non-breaking spaces. They are
     # pure decoder padding, never mathematical content, and they wreck the
     # editable text (and downstream token comparisons) if left in place.
-    latex = re.sub(r"(?:~|\\,|\\;|\\:|\\ ){3,}", " ", latex)
+    latex = re.sub(r"(?:~|\\,|\\;|\\:|\\ |\\!){3,}", " ", latex)
     latex = re.sub(r"[~\s]+$", "", latex)
     # texify wraps output in $$..$$ and sometimes leaves a stray "$" before
     # the sentence period ("X^3+aX+b=0$."), or separates several equations

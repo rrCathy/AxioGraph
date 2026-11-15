@@ -113,6 +113,39 @@ def texify_available() -> bool:
     return all((TEXIFY_DIR / f).exists() for f in TEXIFY_FILES)
 
 
+class _LoopStop:
+    """Halt decoding when the decoder locks into a short repeating cycle.
+
+    Arrow diagrams / schematic figures make texify emit "\\begin{array}{c c c
+    ..." or "\\!\\!\\!..." until the token budget is exhausted (769 tokens,
+    25-30 s per block, 1500 junk characters in the editable text). A real
+    formula never ends 32 consecutive tokens made of one short cycle, so this
+    stops the bad case in ~30 tokens while leaving every good decode untouched.
+    Note: no_repeat_ngram_size was tried and rejected -- it rewrites ordinary
+    formulas (mismatched braces on p52, hallucinations at ngram=4).
+    """
+
+    def __init__(self, window: int = 32, max_period: int = 8):
+        self.window = window
+        self.max_period = max_period
+
+    def __call__(self, input_ids, scores, **kwargs) -> bool:
+        tail = input_ids[0, -self.window:].tolist()
+        n = len(tail)
+        if n < self.window:
+            return False
+        for period in range(1, self.max_period + 1):
+            if n % period:
+                continue
+            unit = tail[-period:]
+            # The WHOLE window must be one cycle. Looking at only the last few
+            # tokens falsely stops real formulas with repeated digits ("10000")
+            # or a couple of repeated array columns.
+            if all(tail[i:i + period] == unit for i in range(0, n, period)):
+                return True
+        return False
+
+
 class _TexifyAdapter:
     """vikp/texify behind the same `(img) -> (latex, conf)` interface as the
     pix2tex ONNX engine, so page_layout can switch engines transparently.
@@ -130,8 +163,10 @@ class _TexifyAdapter:
     def __init__(self):
         import numpy as np
         import torch
-        from transformers import AutoTokenizer, VisionEncoderDecoderModel
+        from transformers import (AutoTokenizer, VisionEncoderDecoderModel,
+                                  StoppingCriteriaList)
 
+        self._stopping = StoppingCriteriaList([_LoopStop()])
         self._np = np
         self._torch = torch
         self.model = VisionEncoderDecoderModel.from_pretrained(
@@ -159,7 +194,8 @@ class _TexifyAdapter:
             ids = self.model.generate(
                 pixel_values=pixel_values,
                 decoder_start_token_id=self._start,
-                max_new_tokens=1024,
+                max_new_tokens=384,           # 1024 only fed degenerate loops
+                stopping_criteria=self._stopping,
                 bad_words_ids=[[self._unk]],
             )
         latex = self.tokenizer.batch_decode(ids, skip_special_tokens=True)[0].strip()
@@ -211,6 +247,11 @@ def latex_valid(latex: str) -> bool:
     """A recognized LaTeX string is trustworthy only if it still carries
     mathematical structure after stripping whitespace/annotation noise."""
     if not latex:
+        return False
+    # Even with early loop stopping, a decoder that ran in a cycle leaves a
+    # long run of bare array-column letters ("c c c c ...") or spacing padding.
+    # It is not a formula: keep the text-layer characters in the editor instead.
+    if len(latex) > 512 or re.search(r"(?:[A-Za-z]\s+){12,}", latex):
         return False
     if "\\nonumber" in latex:
         return False
