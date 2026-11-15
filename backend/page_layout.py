@@ -465,9 +465,10 @@ def _looks_mathish(text: str) -> bool:
 LAYOUT_VERSION = 14
 
 
-def build_layout(book_id: str, page_no: int) -> dict:
-    path = pdf_path(book_id)
-    doc = fitz.open(str(path))
+def build_layout(book_id: str, page_no: int, pdf_override: str | None = None) -> dict:
+    """`pdf_override` lets offline benchmarks run the real pipeline on a PDF
+    that is not imported into the workbench database."""
+    doc = fitz.open(str(pdf_override or pdf_path(book_id)))
     if page_no < 1 or page_no > len(doc):
         doc.close()
         raise ValueError("page out of range")

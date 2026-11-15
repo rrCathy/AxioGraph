@@ -16,6 +16,7 @@ data/books/
 data/lightrag/
 data/bench_arxiv/
 data/bench_im2latex/
+data/bench_aljabr/
 data/*.kuzu
 
 # Agent / IDE runtime state (local only, not source)
