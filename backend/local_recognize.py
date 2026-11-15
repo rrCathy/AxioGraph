@@ -260,7 +260,12 @@ def latex_valid(latex: str) -> bool:
     # Degenerate pix2tex output: a prose line fed to the formula model turns
     # into hundreds of hallucinated \hat / \bf tokens. No real formula repeats
     # one command this often.
-    cmds = re.findall(r"\\[a-zA-Z]+", latex)
+    # Spacing commands carry no semantics and texify pads with them, so they
+    # are stripped before counting: a legitimate functor-arrow formula
+    # ("\mathcal{C} \; \xrightarrow{\quad G\quad} \; ...") otherwise hits the
+    # dominance threshold on \quad alone (p59: 6 of 13 commands were \quad).
+    latex_ns = _WHITESPACE_CMD.sub("", latex)
+    cmds = re.findall(r"\\[a-zA-Z]+", latex_ns)
     if cmds:
         counts: dict[str, int] = {}
         for c in cmds:
@@ -274,7 +279,10 @@ def latex_valid(latex: str) -> bool:
         if top >= 20 or (len(cmds) >= 12 and top / len(cmds) > 0.45
                          and len(counts) <= 3):
             return False
-    if re.search(r"(\\[a-zA-Z]+(?:\{[^{}]*\})?)\1{5,}", latex):
+    # With spacing padding stripped, alternating stand-in filler collapses to
+    # adjacent repeats of one command ("\nwarrow\nwarrow..." on p28) -- the
+    # repeated-command test below then catches what the histogram cannot.
+    if re.search(r"(\\[a-zA-Z]+(?:\{[^{}]*\})?)\1{5,}", latex_ns):
         return False
     # A bare equation number "(1.5)" read off a margin is not a formula.
     stripped = latex.replace("\\,", "").replace("\\ ", "").strip()

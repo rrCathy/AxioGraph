@@ -56,6 +56,12 @@ def _tidy_latex(latex: str) -> str:
     # pure decoder padding, never mathematical content, and they wreck the
     # editable text (and downstream token comparisons) if left in place.
     latex = re.sub(r"(?:~|\\,|\\;|\\:|\\ |\\!){3,}", " ", latex)
+    latex = re.sub(r"(?:\\quad|\\qquad){2,}", r" \\quad ", latex)
+    # texify re-emits the printed equation number as a tag ("...\tag{1.2}") or    # a bold pair ("(\mathbf{2.6})"). The number belongs to the margin, not to
+    # the formula the user is about to edit.
+    latex = re.sub(r"\\tag\s*\{[^{}]*\}", "", latex)
+    latex = re.sub(r"\(\s*\\(?:mathbf|mathrm|bm)\s*\{\d+(?:\.\d+)?\}\s*\)", "",
+                   latex)
     latex = re.sub(r"[~\s]+$", "", latex)
     # texify wraps output in $$..$$ and sometimes leaves a stray "$" before
     # the sentence period ("X^3+aX+b=0$."), or separates several equations
@@ -63,6 +69,34 @@ def _tidy_latex(latex: str) -> str:
     # here only corrupts the editable text. Keep escaped \$ (currency).
     latex = re.sub(r"(?<!\\)\$+", "", latex)
     return latex.strip()
+
+
+# Glyphs texify emits in place of Chinese characters it cannot read (observed
+# on AlJabr-1 annotated definitions: "如果 α 是极限序数" -> \nwarrow runs,
+# "满足 ..." -> \nmid_{\mathcal{H}} clusters). They never appear legitimately
+# inside a displayed definition from this corpus.
+_STANDIN_CMD_RE = re.compile(
+    r"\\(?:nmid|nwarrow|nparallel|nearrow|swarrow|searrow)"
+    r"(?:\s*[_^]\s*\{(?:[^{}]|\{[^{}]*\})*\})*")
+_SELF_FRACTION_RE = re.compile(
+    r"\\frac\s*\{\s*(\\mathbb\s*\{[A-Za-z]\})\s*\}\s*\{\s*\1\s*\}")
+
+
+def _salvage_annotated(latex: str) -> str:
+    """Strip systematic stand-in garbage from a mixed formula's LaTeX.
+
+    The symbolic skeleton around the annotation is read correctly; the user
+    can re-type the annotation, so cleaning beats discarding the whole block.
+    Only applied to annotated-formula blocks, and the result must stay
+    balanced and pass latex_valid before it replaces the original.
+    """
+    latex = _STANDIN_CMD_RE.sub(" ", latex)
+    latex = _SELF_FRACTION_RE.sub(" ", latex)
+    latex = re.sub(r"\\tag\s*\{[^{}]*\}", "", latex)
+    latex = re.sub(r"\(\s*\\(?:mathbf|mathrm|bm)\s*\{\d+(?:\.\d+)?\}\s*\)", "",
+                   latex)
+    latex = re.sub(r"(?:\\quad|\\qquad){2,}", r" \\quad ", latex)
+    return re.sub(r"[~\s]+$", "", latex).strip()
 
 
 _ACCENT_MAP = {"\u02c6": "\u0302", "\u02dc": "\u0303", "\u00af": "\u0304",
@@ -704,6 +738,12 @@ def build_layout(book_id: str, page_no: int, pdf_override: str | None = None) ->
         except Exception:
             continue
         latex = _tidy_latex(str(latex).strip())
+        if b.get("_annotated"):
+            cleaned = _salvage_annotated(latex)
+            if (cleaned != latex and LR.latex_valid(cleaned)
+                    and cleaned.count("\\begin") == cleaned.count("\\end")
+                    and cleaned.count("{") == cleaned.count("}")):
+                latex = cleaned
         if LR.latex_valid(latex):
             b["latex"] = latex
             b["latex_source"] = "latex-ocr"

@@ -172,7 +172,17 @@ def normalize(s: str) -> str:
     s = re.sub(r"\\stackrel\s*\{([^{}]*)\}\s*\{\\longleftarrow\}", r"\\LARROW{\1}", s)
     s = re.sub(r"\\Obj\b", r"\\operatorname{Ob}", s)
     s = re.sub(r"\\bf(?=[A-Za-z0-9])", r"\\mathbf ", s)
+    s = re.sub(r"\\mathbf\s+([A-Za-z0-9])", r"\\mathbf{\1}", s)
     s = re.sub(r"\\identity_([A-Za-z])", r"\\mathrm{id}_{\1}", s)
+    # texify spells \mathcal as plain-TeX "\cal C", operators as \mbox, and
+    # re-emits printed equation numbers as \tag / bold pairs.
+    s = re.sub(r"\{?\\cal\b\s*([A-Za-z])\}?", r"\\mathcal{\1}", s)
+    s = re.sub(r"\\mbox\s*\{\s*([A-Za-z]+)\s*\}", r"\\mathrm{\1}", s)
+    s = re.sub(r"\\Hom\b", r"\\mathrm{Hom}", s)
+    s = re.sub(r"\\operatorname\s*\{\s*([A-Za-z]+)\s*\}", r"\\mathrm{\1}", s)
+    s = s.replace("\\emptyset", "\\varnothing")
+    s = s.replace("\\lvert", "|").replace("\\rvert", "|")
+    s = re.sub(r"\\tag\s*\{[^{}]*\}", "", s)
     return s
 
 
