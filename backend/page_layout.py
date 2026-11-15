@@ -172,6 +172,76 @@ def _center_in(inner: list[float], outer: list[float], pad: float = 3.0) -> bool
             and outer[1] - pad <= cy <= outer[3] + pad)
 
 
+# A commutative diagram is drawn as vector arrows between short math labels.
+# Arrow HEADS (tiny two-segment drawings) are the reliable signal: real
+# formulas have none, illustrations (Cayley graphs, function sketches) have
+# 0-1, while commutative diagrams have 3-16. Measured on 12 labelled pages.
+DIAGRAM_MIN_NODES = 2
+DIAGRAM_MIN_ARROWS = 2
+
+
+def _diagram_evidence(drawings: list[dict], bbox: list[float],
+                      rows: list[dict]) -> tuple[int, int, int]:
+    """(math labels, plain lines, arrow heads) inside one layout region."""
+    r = fitz.Rect(bbox) + (-2, -2, 2, 2)
+    lines = arrows = 0
+    for d in drawings:
+        q = d["rect"]
+        if q.is_empty:
+            continue
+        cx, cy = (q.x0 + q.x1) / 2, (q.y0 + q.y1) / 2
+        if not (r.x0 <= cx <= r.x1 and r.y0 <= cy <= r.y1):
+            continue
+        if max(q.width, q.height) < 3:
+            continue
+        if len(d["items"]) >= 2 and q.width < 20 and q.height < 20:
+            arrows += 1
+        else:
+            lines += 1
+    nodes = sum(1 for x in rows
+                if _center_in(x["bbox"], bbox)
+                and not re.search(r"[\u4e00-\u9fff]", x["text"])
+                and 0 < len(x["text"].strip()) <= 12)
+    return nodes, lines, arrows
+
+
+def _diagram_text(rows: list[dict]) -> str:
+    """Keep the 2D arrangement of a diagram's node/morphism labels.
+
+    Flattening them into one line ("A ι Â ∃! f̂ f B") destroys the only
+    information the text layer has; grouping by vertical band and indenting
+    by x keeps the shape readable without guessing arrow endpoints.
+    """
+    items = []
+    for r in rows:
+        t = (r.get("text_math") or r.get("text") or "").strip()
+        if t and r.get("bbox"):
+            bb = r["bbox"]
+            items.append(((bb[1] + bb[3]) / 2, bb[0], t))
+    if not items:
+        return ""
+    x0 = min(i[1] for i in items)
+    x1 = max(r["bbox"][2] for r in rows if r.get("bbox"))
+    scale = 46.0 / max(1.0, x1 - x0)
+    items.sort()
+    bands: list[list] = []  # [last_y, [(column, text), ...]]
+    for yc, x, t in items:
+        col = (x - x0) * scale
+        if bands and yc - bands[-1][0] <= 9:
+            bands[-1][0] = yc
+            bands[-1][1].append((col, t))
+        else:
+            bands.append([yc, [(col, t)]])
+    out = []
+    for _, band in bands:
+        line = ""
+        for pos, t in sorted(band):
+            col = max(0, int(pos))
+            line += " " * max(1, col - len(line) + 1) + t
+        out.append(line.rstrip())
+    return "\n".join(out)
+
+
 def _attach_bigops(rows: list[dict], reg: dict, inside: list, used: set) -> list[float]:
     """Give a formula region back the one-glyph big operator above it.
 
@@ -289,7 +359,7 @@ def _looks_mathish(text: str) -> bool:
     return len(words) >= 2 and singles / len(words) >= 0.6
 
 
-LAYOUT_VERSION = 12
+LAYOUT_VERSION = 13
 
 
 def build_layout(book_id: str, page_no: int) -> dict:
@@ -340,15 +410,29 @@ def build_layout(book_id: str, page_no: int) -> dict:
     else:
         rows, text_source = spans, "text_layer"
 
-    # Assign lines to semantic regions.
+    # Assign lines to semantic regions. Vector drawings are read once per page
+    # so the diagram classifier stays cheap.
     blocks: list[dict] = []
     used: set[int] = set()
+    drawings = page.get_drawings() if regions else []
     for reg in regions:
         kind = LR.LABEL_MAP.get(reg["label"], "P")
         inside = [(i, r) for i, r in enumerate(rows)
                   if _center_in(r["bbox"], reg["bbox"])]
         if not inside:
             continue
+        n_nodes, _, n_arrows = ((0, 0, 0) if reg["label"] not in ("formula", "picture")
+                                else _diagram_evidence(drawings, reg["bbox"], rows))
+        # The layout model calls a commutative diagram either "formula" (then
+        # texify emits garbage) or "picture" (then it is silently dropped).
+        # Both are wrong: a diagram carries mathematical content and must be
+        # extracted, but never fed to a formula model. Illustrations have no
+        # arrow heads and stay FIGURE (excluded from the editable text).
+        is_diagram = (reg["label"] in ("formula", "picture")
+                      and n_nodes >= DIAGRAM_MIN_NODES
+                      and n_arrows >= DIAGRAM_MIN_ARROWS)
+        if is_diagram:
+            kind = "DIAGRAM"
         box = _attach_bigops(rows, reg, inside, used)
         used.update(i for i, _ in inside)
         # Big braces, sub/superscripts and math glyphs sit on slightly different
@@ -359,11 +443,16 @@ def build_layout(book_id: str, page_no: int) -> dict:
             round(ir[1]["bbox"][1] / 6) if mathy else ir[1]["bbox"][1],
             ir[1]["bbox"][0],
         ))
-        text = _clean(" ".join(r.get("text_math") or r["text"] for _, r in inside))
+        if kind == "DIAGRAM":
+            text = _diagram_text([r for _, r in inside])
+        else:
+            text = _clean(" ".join(r.get("text_math") or r["text"] for _, r in inside))
         if not text:
             continue
         b: dict = {"type": kind, "text": text, "bbox": box,
                    "origin": f"layout:{reg['label']}"}
+        if kind == "DIAGRAM":
+            b["arrows"] = n_arrows
         if kind == "H":
             b["level"] = 1 if reg["label"] == "title" else 2
         elif kind == "P":
@@ -554,7 +643,7 @@ def build_layout(book_id: str, page_no: int) -> dict:
         "math_lines": sum(1 for b in blocks if b.get("has_math")),
         "blocks": blocks,
         "counts": {k: sum(1 for b in blocks if b["type"] == k)
-                   for k in ("H", "TABLE", "P", "FORMULA", "FIGURE", "NOISE")},
+                   for k in ("H", "TABLE", "P", "FORMULA", "DIAGRAM", "FIGURE", "NOISE")},
     }
 
 
@@ -577,6 +666,15 @@ def render_layout_text(layout: dict, include_figure: bool = False) -> str:
                 out.append("$$" + b["latex"] + "$$" + (" " + han if han else ""))
             else:
                 out.append("[FORMULA] " + b["text"])
+        elif t == "DIAGRAM":
+            # A commutative diagram carries real mathematical content, so it
+            # belongs in the editable text. Its labels are laid out in 2D
+            # bands; arrow count tells the reader how many morphisms to expect.
+            # ASCII marker like [P]/[FORMULA]: Han characters here would be
+            # counted as extracted content and corrupt han-recall/order.
+            arrows = b.get("arrows")
+            head = "[DIAGRAM" + (f" · {arrows} arrows]" if arrows else "]")
+            out.append(head + "\n" + b["text"])
         elif t == "FIGURE":
             out.append("[FIGURE] " + b["text"])
         else:

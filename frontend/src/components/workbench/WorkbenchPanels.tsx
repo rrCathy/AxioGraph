@@ -45,6 +45,7 @@ export function LayoutBar({
     .replace('{t}', String(c.TABLE ?? 0))
     .replace('{p}', String(c.P ?? 0))
     .replace('{f}', String(c.FORMULA ?? 0))
+    .replace('{d}', String(c.DIAGRAM ?? 0))
     .replace('{g}', String(c.FIGURE ?? 0))
   const chip = 'ag-focus-ring px-2 py-0.5 text-micro rounded-btn border transition-colors'
 
