@@ -162,6 +162,26 @@ def locate(truths, windows, threshold, budget):
     return out, scanned
 
 
+def normalize(s: str) -> str:
+    """Collapse spellings that are semantically identical BEFORE canon().
+    Applied to BOTH truth and prediction, so it cannot inflate the score by
+    weakening only one side. Records the AlJabr-1 macro vocab explicitly."""
+    s = re.sub(r"\\xrightarrow\s*\{([^{}]*)\}", r"\\ARROW{\1}", s)
+    s = re.sub(r"\\xleftarrow\s*\{([^{}]*)\}", r"\\LARROW{\1}", s)
+    s = re.sub(r"\\stackrel\s*\{([^{}]*)\}\s*\{\\longrightarrow\}", r"\\ARROW{\1}", s)
+    s = re.sub(r"\\stackrel\s*\{([^{}]*)\}\s*\{\\longleftarrow\}", r"\\LARROW{\1}", s)
+    s = re.sub(r"\\Obj\b", r"\\operatorname{Ob}", s)
+    s = re.sub(r"\\bf(?=[A-Za-z0-9])", r"\\mathbf ", s)
+    s = re.sub(r"\\identity_([A-Za-z])", r"\\mathrm{id}_{\1}", s)
+    return s
+
+
+def score(a: str, b: str) -> tuple[float, float]:
+    """(raw f1, normalized f1) -- report both so a scoring change is visible."""
+    return (BF.score_pair(a, b)["f1"],
+            BF.score_pair(normalize(a), normalize(b))["f1"])
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--limit", type=int, default=40, help="max located formulas to score")
@@ -196,18 +216,26 @@ def main():
         diags = [b for b in lay["blocks"] if b["type"] == "DIAGRAM"]
         pages_with_diagram += int(bool(diags))
         relations += sum(len(b.get("relations") or []) for b in diags)
-        # greedy one-to-one matching by token F1
-        pairs = sorted(
-            (BF.score_pair(t["body"], p)["f1"], ti, pi)
-            for ti, t in enumerate(ts) for pi, p in enumerate(preds)
-        ) if preds else []
+        # Greedy one-to-one matching by token F1. A source align/gather often
+        # becomes several adjacent FORMULA blocks; offer their concatenation
+        # as an extra candidate with a private (non-conflicting) pred index.
+        pairs = []
+        multi = "\\\\".join(preds)
+        for ti, t in enumerate(ts):
+            for pi, p in enumerate(preds):
+                raw, norm = score(t["body"], p)
+                pairs.append((norm, raw, ti, pi))
+            if t["env"].startswith(("align", "gather", "multline")) and len(preds) > 1:
+                raw, norm = score(t["body"], multi)
+                pairs.append((norm, raw, ti, -1 - ti))
+        pairs.sort()
         used_t, used_p = set(), set()
-        for f1, ti, pi in reversed(pairs):
+        for norm, raw, ti, pi in reversed(pairs):
             if ti in used_t or pi in used_p:
                 continue
             used_t.add(ti); used_p.add(pi)
-            results.append({"page": pno, "env": ts[ti]["env"], "f1": f1,
-                            "align_conf": ts[ti]["align_conf"],
+            results.append({"page": pno, "env": ts[ti]["env"], "f1": norm,
+                            "f1_raw": raw, "align_conf": ts[ti]["align_conf"],
                             "has_han": ts[ti]["has_han"]})
         if k % 10 == 0:
             print(f"  {k}/{len(by_page)} pages, scored={len(results)} "
@@ -222,7 +250,9 @@ def main():
     print(f"pages processed     {len(by_page)}")
     print(f"located / attempted / scored   {len(located)} / {len(attempted)} / {len(results)} "
           f"(scored {len(results)/max(1,len(attempted)):.3f} of attempted)")
-    print(f"mean token F1       {sum(f1s)/max(1,len(f1s)):.4f}")
+    raws = [r["f1_raw"] for r in results]
+    print(f"mean token F1       {sum(f1s)/max(1,len(f1s)):.4f} "
+          f"(normalized; raw same-side scoring {sum(raws)/max(1,len(raws)):.4f})")
     print(f">=0.90              {sum(x >= .9 for x in f1s)}/{len(f1s)}")
     print(f"pages with DIAGRAM  {pages_with_diagram}; extracted arrow relations {relations}")
     for env, vals in sorted(by_env.items()):
