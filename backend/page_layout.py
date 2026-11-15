@@ -65,6 +65,21 @@ def _tidy_latex(latex: str) -> str:
     return latex.strip()
 
 
+_ACCENT_MAP = {"\u02c6": "\u0302", "\u02dc": "\u0303", "\u00af": "\u0304",
+               "\u02d9": "\u0307", "\u00a8": "\u0308", "`": "\u0300",
+               "\u00b4": "\u0301"}
+_ACCENT_RE = "[" + "".join(re.escape(k) for k in _ACCENT_MAP) + "]"
+
+
+def _join_accents(s: str) -> str:
+    """TeX PDFs encode hats/tildes as separate glyphs ("Aˆ", "ˆf"). Join them
+    into combining marks so editable text reads "Â" / "f̂" instead."""
+    s = re.sub(r"([A-Za-z])(" + _ACCENT_RE + r")",
+               lambda m: m.group(1) + _ACCENT_MAP[m.group(2)], s)
+    return re.sub(r"(" + _ACCENT_RE + r")\s*([A-Za-z])",
+                  lambda m: m.group(2) + _ACCENT_MAP[m.group(1)], s)
+
+
 def _clean(text: str) -> str:
     text = re.sub(r"<br\s*/?>", " ", text, flags=re.I)
     text = re.sub(r"<!--.*?-->", " ", text, flags=re.S)
@@ -76,8 +91,9 @@ def _clean(text: str) -> str:
     text = re.sub(r"\s+", " ", text).strip()
     # Limits of a big operator live on separate text rows; joining the rows
     # with a space used to leave "∩ _{E⊂N◁G} N" in the editable text.
-    return re.sub(r"([\u2211\u220f\u222b\u2229\u222a\u22c2\u22c3])\s+(?=[_^]\{)",
+    text = re.sub(r"([\u2211\u220f\u222b\u2229\u222a\u22c2\u22c3])\s+(?=[_^]\{)",
                   r"\1", text)
+    return _join_accents(text)
 
 
 def _line_text_with_scripts(line: dict) -> str:
@@ -205,33 +221,52 @@ def _diagram_evidence(drawings: list[dict], bbox: list[float],
     return nodes, lines, arrows
 
 
-def _diagram_text(rows: list[dict]) -> str:
-    """Keep the 2D arrangement of a diagram's node/morphism labels.
-
-    Flattening them into one line ("A ι Â ∃! f̂ f B") destroys the only
-    information the text layer has; grouping by vertical band and indenting
-    by x keeps the shape readable without guessing arrow endpoints.
-    """
+def _diagram_labels(rows: list[dict]) -> list[dict]:
+    """Merge glyphs the PDF split apart (a hat and its f share one bbox)."""
     items = []
     for r in rows:
-        t = (r.get("text_math") or r.get("text") or "").strip()
-        if t and r.get("bbox"):
-            bb = r["bbox"]
-            items.append(((bb[1] + bb[3]) / 2, bb[0], t))
-    if not items:
+        bb = r.get("bbox")
+        t = _clean(r.get("text_math") or r.get("text") or "")
+        # Keep Han labels in the 2D text: a diagram region often swallows a
+        # line of prose, and dropping it silently loses characters. They are
+        # excluded from node/morphism matching below instead.
+        if not t or not bb:
+            continue
+        items.append({"text": t, "bbox": list(bb), "size": r.get("size", 10),
+                      "cx": (bb[0] + bb[2]) / 2, "cy": (bb[1] + bb[3]) / 2})
+    items.sort(key=lambda x: (x["cy"], x["bbox"][0]))
+    merged: list[dict] = []
+    for it in items:
+        if merged and abs(it["cy"] - merged[-1]["cy"]) <= 6:
+            a, b = merged[-1]["bbox"], it["bbox"]
+            ov = min(a[2], b[2]) - max(a[0], b[0])
+            if ov > 0 and ov / max(1.0, min(a[2] - a[0], b[2] - b[0])) > 0.5:
+                merged[-1]["text"] = _clean(merged[-1]["text"] + " " + it["text"])
+                merged[-1]["bbox"] = [min(a[0], b[0]), min(a[1], b[1]),
+                                      max(a[2], b[2]), max(a[3], b[3])]
+                m = merged[-1]
+                m["cx"] = (m["bbox"][0] + m["bbox"][2]) / 2
+                m["cy"] = (m["bbox"][1] + m["bbox"][3]) / 2
+                continue
+        merged.append(dict(it))
+    return merged
+
+
+def _diagram_text(labels: list[dict]) -> str:
+    """Keep the 2D arrangement of a diagram's labels (fallback view)."""
+    if not labels:
         return ""
-    x0 = min(i[1] for i in items)
-    x1 = max(r["bbox"][2] for r in rows if r.get("bbox"))
+    x0 = min(l["bbox"][0] for l in labels)
+    x1 = max(l["bbox"][2] for l in labels)
     scale = 46.0 / max(1.0, x1 - x0)
-    items.sort()
-    bands: list[list] = []  # [last_y, [(column, text), ...]]
-    for yc, x, t in items:
-        col = (x - x0) * scale
-        if bands and yc - bands[-1][0] <= 9:
-            bands[-1][0] = yc
-            bands[-1][1].append((col, t))
+    bands: list[list] = []
+    for l in sorted(labels, key=lambda x: (x["cy"], x["bbox"][0])):
+        col = (l["bbox"][0] - x0) * scale
+        if bands and l["cy"] - bands[-1][0] <= 9:
+            bands[-1][0] = l["cy"]
+            bands[-1][1].append((col, l["text"]))
         else:
-            bands.append([yc, [(col, t)]])
+            bands.append([l["cy"], [(col, l["text"])]])
     out = []
     for _, band in bands:
         line = ""
@@ -240,6 +275,74 @@ def _diagram_text(rows: list[dict]) -> str:
             line += " " * max(1, col - len(line) + 1) + t
         out.append(line.rstrip())
     return "\n".join(out)
+
+
+def _dist(p, q) -> float:
+    return ((p.x - q.x) ** 2 + (p.y - q.y) ** 2) ** 0.5
+
+
+def _diagram_relations(drawings: list[dict], bbox: list[float],
+                       labels: list[dict]) -> list[str]:
+    """Reconstruct "A —f→ B" from vector line endpoints and arrow heads.
+
+    A stroked path with one item is the shaft; a small two-curve path is the
+    head. The head nearest a shaft endpoint fixes the direction. Endpoint ->
+    nearest full-size math label gives the objects, and the small label near
+    the shaft midpoint gives the morphism name.
+    """
+    r = fitz.Rect(bbox) + (-6, -6, 6, 6)
+    lines: list[tuple] = []
+    heads: list = []
+    for d in drawings:
+        if d.get("type") != "s":
+            continue
+        q, items = d["rect"], d["items"]
+        cx, cy = (q.x0 + q.x1) / 2, (q.y0 + q.y1) / 2
+        if not (r.x0 <= cx <= r.x1 and r.y0 <= cy <= r.y1):
+            continue
+        if len(items) == 1 and items[0][0] in ("l", "c"):
+            p0, p1 = items[0][1], items[0][-1]
+            if _dist(p0, p1) >= 6:
+                lines.append((p0, p1))
+        elif (len(items) == 2 and all(i[0] == "c" for i in items)
+              and q.width < 20 and q.height < 20):
+            heads.append(fitz.Point(cx, cy))
+    if not heads or not lines:
+        return []
+    def math_label(l: dict) -> bool:
+        return not re.search(r"[\u4e00-\u9fff]", l["text"])
+
+    nodes = [l for l in labels if l["size"] >= 8.5 and math_label(l)]
+    morphs = [l for l in labels if l["size"] < 8.5 and math_label(l)]
+
+    def nearest(pt, cands, maxd):
+        best, bd = None, maxd
+        for c in cands:
+            d = _dist(pt, fitz.Point(c["cx"], c["cy"]))
+            if d < bd:
+                best, bd = c, d
+        return best
+
+    out = []
+    for p0, p1 in lines:
+        d0 = min(_dist(p0, h) for h in heads)
+        d1 = min(_dist(p1, h) for h in heads)
+        if d1 < d0 and d1 < 14:
+            start, end = p0, p1
+        elif d0 <= d1 and d0 < 14:
+            start, end = p1, p0
+        else:
+            continue
+        a, b = nearest(start, nodes, 22), nearest(end, nodes, 22)
+        if not a or not b or a["text"] == b["text"]:
+            continue
+        mid = fitz.Point((p0.x + p1.x) / 2, (p0.y + p1.y) / 2)
+        lab = nearest(mid, morphs, 14)
+        name = lab["text"] if lab else ""
+        line = f"{a['text']} —{name}→ {b['text']}" if name else f"{a['text']} → {b['text']}"
+        if line not in out:
+            out.append(line)
+    return out
 
 
 def _attach_bigops(rows: list[dict], reg: dict, inside: list, used: set) -> list[float]:
@@ -359,7 +462,7 @@ def _looks_mathish(text: str) -> bool:
     return len(words) >= 2 and singles / len(words) >= 0.6
 
 
-LAYOUT_VERSION = 13
+LAYOUT_VERSION = 14
 
 
 def build_layout(book_id: str, page_no: int) -> dict:
@@ -443,8 +546,10 @@ def build_layout(book_id: str, page_no: int) -> dict:
             round(ir[1]["bbox"][1] / 6) if mathy else ir[1]["bbox"][1],
             ir[1]["bbox"][0],
         ))
+        dlabs: list[dict] = []
         if kind == "DIAGRAM":
-            text = _diagram_text([r for _, r in inside])
+            dlabs = _diagram_labels([r for _, r in inside])
+            text = _diagram_text(dlabs)
         else:
             text = _clean(" ".join(r.get("text_math") or r["text"] for _, r in inside))
         if not text:
@@ -453,6 +558,7 @@ def build_layout(book_id: str, page_no: int) -> dict:
                    "origin": f"layout:{reg['label']}"}
         if kind == "DIAGRAM":
             b["arrows"] = n_arrows
+            b["relations"] = _diagram_relations(drawings, reg["bbox"], dlabs)
         if kind == "H":
             b["level"] = 1 if reg["label"] == "title" else 2
         elif kind == "P":
@@ -672,9 +778,17 @@ def render_layout_text(layout: dict, include_figure: bool = False) -> str:
             # bands; arrow count tells the reader how many morphisms to expect.
             # ASCII marker like [P]/[FORMULA]: Han characters here would be
             # counted as extracted content and corrupt han-recall/order.
-            arrows = b.get("arrows")
+            arrows = b.get("arrows") or 0
             head = "[DIAGRAM" + (f" · {arrows} arrows]" if arrows else "]")
-            out.append(head + "\n" + b["text"])
+            rels = b.get("relations") or []
+            parts = []
+            if rels:
+                parts.append("\n".join(rels))
+            # Keep the 2D label fallback whenever not every arrow was resolved
+            # (string diagrams, partially drawn figures).
+            if not rels or len(rels) < arrows:
+                parts.append(b["text"])
+            out.append(head + "\n" + "\n".join(p for p in parts if p))
         elif t == "FIGURE":
             out.append("[FIGURE] " + b["text"])
         else:
