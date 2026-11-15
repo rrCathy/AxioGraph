@@ -71,6 +71,16 @@ def get_page(book_id: str, page_no: int):
     return page
 
 
+@router.get("/{book_id}/pages/{page_no}/meta")
+def get_page_meta(book_id: str, page_no: int):
+    """Page geometry only — never triggers layout recognition. The frontend
+    uses this to show the original page before the slow text extraction."""
+    meta = ps.get_page_meta(book_id, page_no)
+    if not meta:
+        raise HTTPException(404, "Page not found or not imported")
+    return meta
+
+
 @router.put("/{book_id}/pages/{page_no}")
 def update_page(book_id: str, page_no: int, body: TextUpdate):
     if not ps.save_page_text(book_id, page_no, body.text, body.status):

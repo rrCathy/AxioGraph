@@ -81,6 +81,16 @@ export async function listPages(bookId: string) {
   return res.json()
 }
 
+/** Geometry-only shell. Deliberately does NOT run layout recognition. */
+export async function getPageMeta(bookId: string, pageNo: number): Promise<{
+  page_no: number; status: string; quality: number
+  page_width?: number; page_height?: number
+}> {
+  const res = await fetch(`${BASE}/books/${bookId}/pages/${pageNo}/meta`)
+  if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`)
+  return res.json()
+}
+
 export async function getPage(bookId: string, pageNo: number) {
   const res = await fetch(`${BASE}/books/${bookId}/pages/${pageNo}`)
   if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`)

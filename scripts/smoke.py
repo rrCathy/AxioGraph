@@ -8,6 +8,7 @@ warning, not a failure: browsing existing graphs does not need a model server.
 """
 import json
 import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -120,6 +121,19 @@ def c_pages():
     return None
 
 
+def c_meta():
+    # The page shell must stay cheap: it is what lets the original page render
+    # before the slow extraction, so guard against recognition creeping in.
+    t0 = time.perf_counter()
+    _, body = get(f"{BACKEND}/api/books/{PAGE_BOOK}/pages/1/meta", timeout=8)
+    dt = time.perf_counter() - t0
+    d = json.loads(body)
+    assert d.get("page_width") and d.get("page_height"), "missing page geometry"
+    assert "layout" not in d and "blocks" not in d, "meta must not carry extracted content"
+    assert dt < 1.0, f"meta took {dt:.2f}s - is it running recognition?"
+    return f"{d['page_width']:.0f}pt geometry in {dt * 1000:.0f}ms, no layout work"
+
+
 def c_page_detail():
     # First hit may build the typed layout from scratch (layout model + OCR +
     # LaTeX engines) — allow a generous cold-start budget.
@@ -180,6 +194,7 @@ if not failures:
     pages_detail = c_pages()
     if pages_detail:
         print(f"[PASS] page index - {pages_detail}")
+        check("page shell /meta (no recognition)", c_meta)
         check("page text + bboxes", c_page_detail)
         check("original page render", c_render)
         check("workbench read APIs", c_workbench_api)

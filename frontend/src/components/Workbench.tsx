@@ -109,17 +109,36 @@ export default function Workbench() {
   }, [bookId])
 
   const [pageLoading, setPageLoading] = useState(false)
+  // Geometry of the ORIGINAL page, fetched on its own cheap endpoint. Keeping
+  // it out of `page` lets the image appear before recognition finishes. It is
+  // kept across flips (same book = same page size) so the picture never blinks.
+  const [pageGeom, setPageGeom] = useState<{ w: number; h: number } | null>(null)
   const loadPage = useCallback(async (target?: number) => {
     const n = target ?? pageNo
-    if (!bookId) { setPage(null); return }
+    if (!bookId) { setPage(null); setPageGeom(null); return }
     const key = `${bookId}#${n}`
     const cached = pageCacheRef.current.get(key)
-    if (cached) { setPage(cached); setPageLoading(false); return }
+    if (cached) {
+      setPage(cached)
+      if (cached.page_width && cached.page_height) {
+        setPageGeom({ w: cached.page_width, h: cached.page_height })
+      }
+      setPageLoading(false)
+      return
+    }
     const req = ++pageReqRef.current
     setPageLoading(true)
-    // Never leave the previous page's text on screen while the new one is
-    // being recognized — it reads as "the recognition did not follow me".
+    // Clear only the extracted text, never the original page image. Showing
+    // the previous page's text under a new page reads as "recognition lagged".
     setPage(null)
+    // Stage 1 (milliseconds): geometry -> the rendered page shows up at once.
+    void api.getPageMeta(bookId, n).then((meta) => {
+      if (pageReqRef.current !== req) return
+      if (meta.page_width && meta.page_height) {
+        setPageGeom({ w: meta.page_width, h: meta.page_height })
+      }
+    }).catch(() => { /* the image still renders at the default zoom */ })
+    // Stage 2 (seconds on an uncached page): layout recognition + editable text.
     try {
       const data = await api.getPage(bookId, n)
       if (pageReqRef.current !== req) return // user moved on; drop stale data
@@ -129,6 +148,9 @@ export default function Workbench() {
         if (oldest != null) pageCacheRef.current.delete(oldest)
       }
       setPage(data)
+      if (data.page_width && data.page_height) {
+        setPageGeom({ w: data.page_width, h: data.page_height })
+      }
     } catch {
       if (pageReqRef.current === req) setPage(null)
     } finally {
@@ -148,7 +170,7 @@ export default function Workbench() {
     setNodes(r.nodes || [])
   }, [bookId])
 
-  useEffect(() => { setPageNo(1); loadPages() }, [bookId, loadPages])
+  useEffect(() => { setPageNo(1); setPageGeom(null); loadPages() }, [bookId, loadPages])
   useEffect(() => { loadPage() }, [loadPage])
   useEffect(() => { loadCandidates(); loadNodes() }, [bookId, loadCandidates, loadNodes])
 
@@ -814,14 +836,14 @@ export default function Workbench() {
 
         {(!narrow || narrowView === 'page') && (
           <div className={`${narrow ? 'w-full' : 'flex-1'} flex flex-col min-w-0 bg-ag-bg0`}>
-            {bookId && page ? (
+            {bookId ? (
               <PageViewer
                 bookId={bookId}
                 pageNo={pageNo}
-                blocks={page.blocks}
+                blocks={page?.blocks ?? []}
                 quote={quoteDraft}
-                pageWidth={page.page_width}
-                pageHeight={page.page_height}
+                pageWidth={page?.page_width ?? pageGeom?.w}
+                pageHeight={page?.page_height ?? pageGeom?.h}
                 onBlockClick={() => { setTab('text'); setNarrowView('text') }}
               />
             ) : (
@@ -872,6 +894,16 @@ export default function Workbench() {
                       />
                     </div>
                   </>
+                ) : pageLoading ? (
+                  // The original page is already visible; only the extracted
+                  // text is still being recognized. A skeleton says exactly
+                  // that instead of implying the page failed to load.
+                  <div className="flex-1 min-h-0 flex flex-col justify-center gap-3 px-8" aria-hidden="true">
+                    {[92, 78, 96, 84, 60].map((w, i) => (
+                      <div key={i} className="h-2 rounded-dot bg-ag-line1 opacity-70"
+                           style={{ width: `${w}%` }} />
+                    ))}
+                  </div>
                 ) : (
                   <div className="p-6"><EmptyState>{t('workbench.noPageText')}</EmptyState></div>
                 )}

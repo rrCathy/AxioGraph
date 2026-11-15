@@ -106,6 +106,46 @@ def list_pages(book_id: str) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def _page_geometry(book_id: str, page_no: int) -> tuple[float, float] | None:
+    """PDF point size of one page. Cheap: opens the PDF, never recognizes."""
+    path = pdf_path(book_id)
+    if not path.exists():
+        return None
+    try:
+        doc = fitz.open(str(path))
+        try:
+            if 0 <= page_no - 1 < len(doc):
+                r = doc[page_no - 1].rect
+                return r.width, r.height
+        finally:
+            doc.close()
+    except Exception:
+        return None
+
+
+def get_page_meta(book_id: str, page_no: int) -> dict | None:
+    """Lightweight page shell: geometry + status, with NO layout recognition.
+
+    The workbench renders the original page image as soon as this returns;
+    the extracted text follows later from get_page()/ensure_layout(). Keeping
+    the two apart means a 3-16 s recognition pass no longer blanks the page.
+    """
+    conn = get_db()
+    row = conn.execute(
+        "SELECT status, quality FROM pages WHERE book_id = ? AND page_no = ?",
+        (book_id, page_no),
+    ).fetchone()
+    conn.close()
+    if not row:
+        return None
+    out: dict = {"page_no": page_no, "status": row["status"],
+                 "quality": row["quality"]}
+    geom = _page_geometry(book_id, page_no)
+    if geom:
+        out["page_width"], out["page_height"] = geom
+    return out
+
+
 def get_page(book_id: str, page_no: int) -> dict | None:
     conn = get_db()
     row = conn.execute(
@@ -126,16 +166,9 @@ def get_page(book_id: str, page_no: int) -> dict | None:
     d["text_raw_present"] = bool(d.get("text_raw"))
     # PDF point dimensions, so the frontend can overlay block bboxes on the
     # rendered page image using simple percentages.
-    path = pdf_path(book_id)
-    if path.exists():
-        try:
-            doc = fitz.open(str(path))
-            if 0 <= page_no - 1 < len(doc):
-                rect = doc[page_no - 1].rect
-                d["page_width"], d["page_height"] = rect.width, rect.height
-            doc.close()
-        except Exception:
-            pass
+    geom = _page_geometry(book_id, page_no)
+    if geom:
+        d["page_width"], d["page_height"] = geom
     return d
 
 
