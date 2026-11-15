@@ -28,6 +28,31 @@ MATH_FONT_RE = re.compile(
     r"CMMI|CMSY|CMEX|MSAM|MSBM|LMMath|EUFM|EUSM|Symbol|MathDesign|"
     r"CambriaMath|Cambria.?Math|TeX.?Gyre.?Math|STIX|XITSMath", re.I)
 CONTROL_RE = re.compile(r"[\ufffd\uE000-\uF8FF\x00-\x08\x0b\x0c\x0e-\x1f]")
+# pix2tex renders an ellipsis as a run of \cdot commands.
+_MANY_CDOT_RE = re.compile(r"(?:\\cdot\s*){2,}")
+# A CJK connector ("并且/其中") inside an otherwise correct formula is read
+# by pix2tex as a tiny \hat/\mathrm artifact. Drop just that fragment.
+_CJK_CONNECTOR_ARTIFACT = re.compile(r"\{\\hat\{.*?\}\}\{\\mathrm\{.*?\}\}")
+# CMEX brace glyphs leak into the text layer as bare "9" / "33" right before
+# a formula. They mark a real TeX formula line, not a Chinese prose line.
+_TEX_BRACE_FRAGMENT_RE = re.compile(r"(?:^|\s)(?:9|33)(?=[A-Za-z(])")
+# TeX math PDFs encode radicals/braces/relations as isolated one-glyph text
+# lines. A high share of those lines means the text layer is a pile of glyphs,
+# not a readable transcript — no amount of line sorting will fix it.
+_MATH_ORPHAN_RE = re.compile(
+    r"[\u221a\u2a38\u2208\u21d2\u2243\u228a\u0338]|^[0-9]{1,2}$")
+
+
+def _tidy_latex(latex: str) -> str:
+    """Normalize the unambiguous, lossless cases in formula OCR output."""
+    latex = _MANY_CDOT_RE.sub(r"\\cdots ", latex)
+    latex = _CJK_CONNECTOR_ARTIFACT.sub(r"\\,", latex)
+    # pix2tex pads short crops with long runs of non-breaking spaces. They are
+    # pure decoder padding, never mathematical content, and they wreck the
+    # editable text (and downstream token comparisons) if left in place.
+    latex = re.sub(r"(?:~|\\,|\\;|\\:|\\ ){3,}", " ", latex)
+    latex = re.sub(r"[~\s]+$", "", latex)
+    return latex.strip()
 
 
 def _clean(text: str) -> str:
@@ -35,22 +60,93 @@ def _clean(text: str) -> str:
     text = re.sub(r"<!--.*?-->", " ", text, flags=re.S)
     text = re.sub(r"<[^>]+>", "", text)
     text = CONTROL_RE.sub(" ", text)
+    # TeX radicals are separate glyphs; a run of them is one broken radical,
+    # not a nested root. Collapse before whitespace normalization.
+    text = re.sub(r"(?:\u221a\s*){2,}", "\u221a", text)
     return re.sub(r"\s+", " ", text).strip()
+
+
+def _line_text_with_scripts(line: dict) -> str:
+    """Rebuild sub/superscripts from char size and baseline.
+
+    TeX PDFs put indices in separate 5-7pt spans below (or above) the main
+    baseline. Joining spans as plain text flattens `{v_i.w_j}_{1<=i<=m}` into
+    `vi · wj 1⩽i⩽m`. Character bboxes still carry the structure, so restore
+    it deterministically — no model, no guessing.
+    """
+    chars = []
+    for s in line.get("spans", []):
+        size = float(s.get("size") or 0)
+        font = str(s.get("font", ""))
+        for ch in s.get("chars", []):
+            c = ch.get("c", "")
+            if not c or c == "\n":
+                continue
+            b = ch.get("bbox") or (0, 0, 0, 0)
+            chars.append((b[0], (b[1] + b[3]) / 2, size, font, c))
+    if not chars:
+        return ""
+    size_counts: dict[float, int] = {}
+    for ch in chars:
+        k = round(ch[2], 1)
+        size_counts[k] = size_counts.get(k, 0) + 1
+    base_size = max(size_counts, key=size_counts.get)
+    base_ys = sorted(ch[1] for ch in chars if abs(ch[2] - base_size) < 0.6)
+    base_y = base_ys[len(base_ys) // 2] if base_ys else chars[0][1]
+
+    out: list[str] = []
+    sub: list[str] = []
+    sup: list[str] = []
+    for _x0, cy, size, font, c in sorted(chars, key=lambda t: t[0]):
+        small = size < base_size * 0.82
+        if small and cy > base_y + base_size * 0.12:
+            sub.append(c)
+            continue
+        if small and cy < base_y - base_size * 0.12:
+            sup.append(c)
+            continue
+        if sub:
+            out.append("_{" + "".join(sub).strip() + "}")
+            sub = []
+        if sup:
+            group = "".join(sup).strip()
+            # A stacked condition like "1<=i<=m" sits ABOVE a brace but is a
+            # subscript, not an exponent. Real exponents are short.
+            kind = "_" if len(group) >= 3 and re.search(r"[\u2a7d\u2264\u2265<>,]", group) else "^"
+            out.append(kind + "{" + group + "}")
+            sup = []
+        # CMEX's big summation operator has no Unicode mapping and leaks out
+        # as the digit "7" in the text layer.
+        if "CMEX" in font.upper() and c == "7":
+            c = "\u2211"
+        out.append(c)
+    if sub:
+        out.append("_{" + "".join(sub).strip() + "}")
+    if sup:
+        group = "".join(sup).strip()
+        kind = "_" if len(group) >= 3 and re.search(r"[\u2a7d\u2264\u2265<>,]", group) else "^"
+        out.append(kind + "{" + group + "}")
+    return "".join(out)
 
 
 def _span_rows(page) -> list[dict]:
     rows = []
-    for block in page.get_text("dict")["blocks"]:
+    for block in page.get_text("rawdict")["blocks"]:
         for line in block.get("lines", []):
-            text = "".join(s["text"] for s in line.get("spans", [])).strip()
+            spans = line.get("spans", [])
+            text = "".join(
+                "".join(ch.get("c", "") for ch in s.get("chars", []))
+                for s in spans
+            ).strip()
             if not text:
                 continue
             rows.append({
                 "text": text,
+                "text_math": _line_text_with_scripts(line),
                 "bbox": [round(v, 1) for v in line["bbox"]],
-                "size": round(max((s["size"] for s in line.get("spans", [])), default=0), 1),
+                "size": round(max((s.get("size", 0) for s in spans), default=0), 1),
                 "math": any(MATH_FONT_RE.search(str(s.get("font", "")))
-                            for s in line.get("spans", [])),
+                            for s in spans),
             })
     return rows
 
@@ -96,12 +192,13 @@ def _group_leftovers(rows: list[dict]) -> list[dict]:
         y = r["bbox"][1]
         if blocks and abs(y - blocks[-1]["_y"]) <= 6:
             b = blocks[-1]
-            b["text"] += " " + r["text"]
+            b["text"] += " " + (r.get("text_math") or r["text"])
             b["bbox"] = [min(b["bbox"][0], r["bbox"][0]), min(b["bbox"][1], r["bbox"][1]),
                          max(b["bbox"][2], r["bbox"][2]), max(b["bbox"][3], r["bbox"][3])]
             b["_math"] = b.get("_math", False) or bool(r.get("math"))
         else:
-            blocks.append({"type": "P", "text": r["text"], "bbox": list(r["bbox"]),
+            blocks.append({"type": "P", "text": r.get("text_math") or r["text"],
+                           "bbox": list(r["bbox"]),
                            "origin": "ungrouped", "_y": y,
                            "_math": bool(r.get("math"))})
     for b in blocks:
@@ -152,7 +249,7 @@ def _looks_mathish(text: str) -> bool:
     return len(words) >= 2 and singles / len(words) >= 0.6
 
 
-LAYOUT_VERSION = 4
+LAYOUT_VERSION = 11
 
 
 def build_layout(book_id: str, page_no: int) -> dict:
@@ -169,13 +266,29 @@ def build_layout(book_id: str, page_no: int) -> dict:
     quality = text_quality(raw)
 
     page_area = page.rect.get_area()
+    # A genuine scan is ONE image covering roughly the whole page. TeX-generated
+    # PDFs instead carry stretched pattern/background tiles whose bbox can be
+    # several times the page area; treating those as a full-page bitmap threw
+    # away a perfectly good text layer and OCR destroyed all inline math.
     full_bitmap = any(
-        fitz.Rect(i["bbox"]).get_area() > 0.7 * page_area
+        0.7 * page_area <= fitz.Rect(i["bbox"]).get_area() <= 1.5 * page_area
         for i in page.get_image_info()
         if i["width"] > 400 and i["height"] > 400
     )
     garbled = bool(raw) and len(CONTROL_RE.findall(raw)) / len(raw) > 0.02
-    needs_ocr = bool(full_bitmap or garbled or (quality < 0.55 and raw.strip()))
+    # A readable text layer has a handful of short math lines; a fragmented
+    # TeX layer has dozens ("√" on its own line, "9"/"33" brace glyphs,
+    # superscript digits). Those pages must be read visually instead.
+    math_orphans = sum(
+        1 for r in spans
+        if len(r["text"].strip()) <= 3 and r.get("math")
+        and _MATH_ORPHAN_RE.search(r["text"].strip())
+    )
+    fragmented = len(spans) >= 20 and (
+        math_orphans >= 20 and math_orphans / max(1, len(spans)) >= 0.25
+    )
+    needs_ocr = bool(full_bitmap or garbled or fragmented
+                     or (quality < 0.55 and raw.strip()))
 
     if needs_ocr:
         try:
@@ -197,8 +310,15 @@ def build_layout(book_id: str, page_no: int) -> dict:
         if not inside:
             continue
         used.update(i for i, _ in inside)
-        inside.sort(key=lambda ir: (ir[1]["bbox"][1], ir[1]["bbox"][0]))
-        text = _clean(" ".join(r["text"] for _, r in inside))
+        # Big braces, sub/superscripts and math glyphs sit on slightly different
+        # baselines than the surrounding prose. Bin by visual row (~6pt) before
+        # ordering left-to-right, or inline formulas get scrambled.
+        mathy = any(r.get("math") for _, r in inside)
+        inside.sort(key=lambda ir: (
+            round(ir[1]["bbox"][1] / 6) if mathy else ir[1]["bbox"][1],
+            ir[1]["bbox"][0],
+        ))
+        text = _clean(" ".join(r.get("text_math") or r["text"] for _, r in inside))
         if not text:
             continue
         b: dict = {"type": kind, "text": text, "bbox": reg["bbox"],
@@ -267,6 +387,19 @@ def build_layout(book_id: str, page_no: int) -> dict:
     for b in blocks:
         if b["type"] != "FORMULA":
             continue
+        # CJK prose is never a formula. The layout model often boxes a line
+        # like "乘法满足分配律：对任意的 a1, a2 ..." because of the inline
+        # symbols; feeding that bitmap to pix2tex produces hundreds of
+        # hallucinated \hat tokens. But a set/display formula with just a
+        # connector or two ("并且/其中") IS a formula — keep those, otherwise
+        # their TeX brace fragments ("9P(x) : 33P,Q...") stay unreadable.
+        txt = b.get("text") or ""
+        if re.search(r"[\u4e00-\u9fff]", txt):
+            cjk = len(re.findall(r"[\u4e00-\u9fff]", txt))
+            if cjk > 4 or not _TEX_BRACE_FRAGMENT_RE.search(txt):
+                b["type"] = "P"
+                b["origin"] += "->prose"
+                continue
         if not LR.latex_valid(b.get("latex") or "") and not _looks_mathish(b["text"]):
             b["type"] = "P"                      # diagram label / stray line
             b["origin"] += "->demoted"
@@ -304,7 +437,7 @@ def build_layout(book_id: str, page_no: int) -> dict:
             latex, _ = latex_engine(page_img[zy0:zy1, zx0:zx1])
         except Exception:
             continue
-        latex = str(latex).strip()
+        latex = _tidy_latex(str(latex).strip())
         if LR.latex_valid(latex):
             b["latex"] = latex
             b["latex_source"] = "latex-ocr"
@@ -344,9 +477,9 @@ def build_layout(book_id: str, page_no: int) -> dict:
         "page_no": page_no,
         "page_kind": page_kind,
         "text_source": text_source,
-        # Only a full-page bitmap still needs human/vision verification.
-        # Display formulas now carry locally-recognized LaTeX (best effort,
-        # human review still welcome); prose keeps its OCR/text characters.
+        # Only a genuine full-page bitmap still needs human/vision verification.
+        # Display formulas carry locally recognized LaTeX (best effort, human
+        # review welcome); prose keeps its text-layer/OCR characters.
         "needs_vision": bool(full_bitmap),
         "text_quality": quality,
         "layout_regions": regions,
@@ -377,10 +510,12 @@ def render_layout_text(layout: dict, include_figure: bool = False) -> str:
         elif t == "TABLE":
             out.append("[TABLE]\n" + b["text"])
         elif t == "FORMULA":
-            # LaTeX when the local formula OCR succeeded, OCR characters
-            # otherwise — both editable by the human in the workbench.
+            # Keep any Han characters the layout model swallowed into the
+            # formula box ("其中/使得/证明"). They are prose, not math, and
+            # dropping them silently costs character fidelity.
             if b.get("latex"):
-                out.append("$$" + b["latex"] + "$$")
+                han = "".join(re.findall(r"[\u4e00-\u9fff]", b.get("text") or ""))
+                out.append("$$" + b["latex"] + "$$" + (" " + han if han else ""))
             else:
                 out.append("[FORMULA] " + b["text"])
         elif t == "FIGURE":

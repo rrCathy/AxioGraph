@@ -6,6 +6,8 @@ so the original page and the editable text can never drift apart.
 """
 import json
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pymupdf as fitz
@@ -135,6 +137,56 @@ def get_page(book_id: str, page_no: int) -> dict | None:
         except Exception:
             pass
     return d
+
+
+# --- Adjacent-page prefetch -------------------------------------------------
+# A fresh page costs 3-16 s (ONNX layout + per-formula LaTeX OCR, plus a full
+# RapidOCR pass on fragmented pages). Sequential reading is the common case,
+# so compute the next two pages in ONE background worker; the foreground
+# request never waits for them, and cached pages are skipped entirely.
+_prefetch_lock = threading.Lock()
+_prefetch_queued: set[tuple[str, int]] = set()
+_prefetch_pool = ThreadPoolExecutor(max_workers=1,
+                                    thread_name_prefix="layout-prefetch")
+
+
+def prefetch_layout(book_id: str, page_nos: list[int]) -> None:
+    pages = [n for n in page_nos if n > 0]
+    if not pages:
+        return
+    import page_layout as L  # local import: page_layout imports this module
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT page_no, layout_json FROM pages WHERE book_id = ? "
+        "AND page_no IN (%s)" % ",".join("?" * len(pages)),
+        (book_id, *pages),
+    ).fetchall()
+    conn.close()
+    for row in rows:
+        cached = None
+        if row["layout_json"]:
+            try:
+                cached = json.loads(row["layout_json"])
+            except (ValueError, TypeError):
+                pass
+        if cached and cached.get("version") == L.LAYOUT_VERSION:
+            continue
+        key = (book_id, row["page_no"])
+
+        def _run(k=key, b=book_id, p=row["page_no"]):
+            try:
+                ensure_layout(b, p)
+            except Exception:
+                pass
+            finally:
+                with _prefetch_lock:
+                    _prefetch_queued.discard(k)
+
+        with _prefetch_lock:
+            if key in _prefetch_queued:
+                continue
+            _prefetch_queued.add(key)
+        _prefetch_pool.submit(_run)
 
 
 def ensure_layout(book_id: str, page_no: int) -> dict | None:

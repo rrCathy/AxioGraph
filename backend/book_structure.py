@@ -32,6 +32,15 @@ MAX_TOC_SCAN_PAGES = 20
 MAX_VISION_TOC_PROBES = 6
 
 TOC_ANCHOR_RE = re.compile(r"^\s*(目\s*录|目\s*次|contents|table of contents)\s*$", re.I)
+# Front-matter page headings. These pages never appear in a printed table of
+# contents, yet they belong next to the chapters in the structure editor.
+FRONT_MATTER_RE = re.compile(
+    r"^(?:目\s*录|目次|contents|table of contents|"
+    r"前言|序言|序|自序|代序|再版序|译者序|编者的话|"
+    r"引子|引论|绪论|导论|导言|凡例|致谢|"
+    r"preface|foreword|introduction|acknowledg(?:e)?ments)\s*$",
+    re.I,
+)
 _NUM_ONLY_RE = re.compile(r"^\d{1,4}$")
 _DOTTED_NO_RE = re.compile(r"^\d{1,3}(?:\.\d{1,2}){1,2}$")
 _LEAD_NO_SP_RE = re.compile(r"^(\d{1,3}(?:\.\d{1,2}){0,2})\s+(.*\S)")
@@ -210,7 +219,9 @@ _JUNK_TITLE = re.compile(
     re.I,
 )
 _NONCHAPTER_TITLE = re.compile(
-    r"^(contents|目录|目次|index|索引|cover|封面|halftitle|titlepage)$"
+    r"^(contents|目录|目次|index|索引|cover|封面|halftitle|titlepage|"
+    r"前言|序言|序|自序|引子|引论|绪论|导论|导言|"
+    r"preface|foreword|introduction)$"
 )
 
 
@@ -282,6 +293,90 @@ def get_structure(book_id: str) -> dict | None:
     return d
 
 
+# Books whose outline could not be derived without a model: probe once per
+# process, so the TOC endpoint never rescans a 340-page scanned book.
+_structure_probe_failed: set[str] = set()
+
+
+def ensure_structure(book_id: str) -> dict | None:
+    """Create a zero-model structure draft when a book has none.
+
+    Importing a PDF only builds the page index; without this, every newly
+    added book opens with an empty structure editor and an empty TOC tree
+    until the user manually presses "Auto detect". PDF bookmarks (or a local
+    text-layer TOC) are exact and need no LLM/vision call, so generate the
+    draft on first read. Existing rows are never touched.
+    """
+    if get_structure(book_id) is not None or book_id in _structure_probe_failed:
+        return None
+    path = ps.pdf_path(book_id)
+    if not path.exists():
+        return None
+    doc = fitz.open(str(path))
+    try:
+        meta = doc.metadata or {}
+        title = _clean_meta_title(meta.get("title"))
+        author = (meta.get("author") or "").strip() or None
+        toc_raw = doc.get_toc(simple=True)
+        if toc_raw:
+            items = [
+                {"level": max(1, min(3, int(lvl))), "no": None,
+                 "title": str(t).replace("\x00", "").strip(),
+                 "book_page": None, "pdf_page": int(page)}
+                for lvl, t, page in toc_raw
+                if str(t).replace("\x00", "").strip()
+            ]
+            source = "bookmark"
+        else:
+            items = []
+            source = None
+            seen_ch = 0
+            for start in range(1, min(MAX_TOC_SCAN_PAGES, len(doc)) + 1):
+                text = _page_toc_text(doc[start - 1])
+                if ps.text_quality(text) < 0.55:
+                    continue
+                local, seen_ch = _local_toc_items(text, seen_ch)
+                if not local:
+                    continue
+                items.extend(local)
+                page_no = start
+                while page_no - start < 10 and page_no < len(doc):
+                    more, seen_ch = _local_toc_items(
+                        _page_toc_text(doc[page_no]), seen_ch)
+                    if not more:
+                        break
+                    items.extend(more)
+                    page_no += 1
+                if len(items) >= 5:
+                    source = "text"
+                break
+            if not source:
+                _structure_probe_failed.add(book_id)
+                return None
+
+        if (not title or not author) and len(doc):
+            try:
+                first_text = doc[0].get_text("text")
+            except Exception:
+                first_text = ""
+            if ps.text_quality(first_text) >= 0.55:
+                cover = _cover_meta_from_text(first_text)
+                title = title or cover.get("title")
+                author = author or cover.get("author")
+
+        data = {
+            "title": title, "author": author, "publisher": None,
+            "offset": None, "offset_confidence": 0,
+            "source": source,
+            "toc": [it for it in items if it.get("level", 1) <= 1],
+            "toc_full": items,
+        }
+        save_structure(book_id, data, confirmed=False)
+        return data
+    finally:
+        doc.close()
+
+
 def save_structure(book_id: str, data: dict, confirmed: bool | None = None) -> None:
     conn = get_db()
     if confirmed is None:
@@ -315,6 +410,58 @@ def _page_texts_from_db(book_id: str) -> dict[int, str]:
 
 def _looks_like_toc_page(text: str) -> bool:
     return bool(TOC_PAGE_PATTERNS.search(text or ""))
+
+
+def _front_matter_items(book_id: str, toc: list[dict], n_pages: int) -> list[dict]:
+    """Detect front-matter pages (contents / preface / introduction ...).
+
+    A printed table of contents lists chapters only, so those pages would be
+    missing from the structure editor. Read the first lines of every page
+    before the first chapter instead — pure text layer, no model involved.
+    """
+    chapter_pages = []
+    for it in toc:
+        p = it.get("pdf_page")
+        try:
+            p = int(p) if p is not None else 0
+        except (TypeError, ValueError):
+            p = 0
+        if p > 0:
+            chapter_pages.append(p)
+    stop = min(chapter_pages) if chapter_pages else min(n_pages, 13)
+    limit = min(stop - 1, 12, n_pages)
+    if limit < 1:
+        return []
+    try:
+        doc = fitz.open(str(ps.pdf_path(book_id)))
+    except Exception as e:
+        log.warning("front-matter scan failed for %s: %s", book_id, e)
+        return []
+
+    def key(title: str) -> str:
+        return re.sub(r"[\s\x00-\x1f]+", "", title or "").lower()
+
+    known = {key(it.get("title", "")) for it in toc}
+    found: list[dict] = []
+    seen: set[str] = set()
+    try:
+        for pno in range(1, limit + 1):
+            lines = [l.strip() for l in doc[pno - 1].get_text("text").splitlines()
+                     if l.strip()]
+            for line in lines[:6]:
+                head = line.strip(" \t\u3000")
+                if len(head) > 14 or not FRONT_MATTER_RE.match(head):
+                    continue
+                k = key(head)
+                if not k or k in known or k in seen:
+                    continue
+                seen.add(k)
+                found.append({"level": 1, "no": None, "title": head,
+                              "book_page": None, "pdf_page": pno})
+                break
+    finally:
+        doc.close()
+    return found
 
 
 def _detect_offset(page_texts: dict[int, str], toc_items: list[dict]) -> tuple[float | None, int]:
@@ -504,6 +651,16 @@ def detect_structure(book_id: str, task_id: str | None = None) -> dict:
             for it in result["toc"]:
                 if it["pdf_page"] is None and it["book_page"] is not None:
                     it["pdf_page"] = it["book_page"] + offset
+
+    # Front matter (contents / preface / introduction ...) is never listed in
+    # a printed TOC. Add those pages as peers of the chapters in both views.
+    front = _front_matter_items(book_id, result["toc"], n_pages)
+    if front:
+        result["toc"] = sorted(
+            front + result["toc"],
+            key=lambda it: (it.get("pdf_page") is None,
+                            it.get("pdf_page") if it.get("pdf_page") is not None else 0),
+        )
 
     # Two views of the same parse:
     #   toc      — TOP-LEVEL only (structure editor + chapter nodes);

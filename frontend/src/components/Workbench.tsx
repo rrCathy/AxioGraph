@@ -32,6 +32,7 @@ export default function Workbench() {
   const [pageNo, setPageNo] = useState(1)
   const [windowSize, setWindowSize] = useState(1)
   const [candidates, setCandidates] = useState<Candidate[]>([])
+  const [showAllCandidates, setShowAllCandidates] = useState(false)
   const [nodes, setNodes] = useState<ConfirmedNode[]>([])
   const [tab, setTab] = useState<RightTab>('text')
   const [msg, setMsg] = useState('')
@@ -67,6 +68,17 @@ export default function Workbench() {
 
   const total = pages.length
   const endPage = Math.min(pageNo + windowSize - 1, total || pageNo)
+
+  // Candidates are page-scoped: only show those produced by the window the
+  // user is actually looking at. A cover page must never inherit pending
+  // items extracted from chapter pages weeks ago.
+  const windowCandidates = useMemo(
+    () => candidates.filter((c) =>
+      Number(c.page_start) <= endPage && Number(c.page_end) >= pageNo),
+    [candidates, pageNo, endPage],
+  )
+  const visibleCandidates = showAllCandidates ? candidates : windowCandidates
+  const otherPending = candidates.length - windowCandidates.length
 
   useEffect(() => {
     const onResize = () => setNarrow(window.innerWidth < 1200)
@@ -105,6 +117,9 @@ export default function Workbench() {
     if (cached) { setPage(cached); setPageLoading(false); return }
     const req = ++pageReqRef.current
     setPageLoading(true)
+    // Never leave the previous page's text on screen while the new one is
+    // being recognized — it reads as "the recognition did not follow me".
+    setPage(null)
     try {
       const data = await api.getPage(bookId, n)
       if (pageReqRef.current !== req) return // user moved on; drop stale data
@@ -460,12 +475,34 @@ export default function Workbench() {
 
   const candidatePanel = (
     <div className="flex-1 overflow-auto p-3">
+      <div className="flex items-center justify-between gap-2 mb-2 text-micro text-ag-ink3">
+        <span className="ag-mono">
+          {showAllCandidates
+            ? t('workbench.candidatesAll').replace('{n}', String(candidates.length))
+            : t('workbench.candidatesWindow')
+                .replace('{s}', String(pageNo)).replace('{e}', String(endPage))}
+        </span>
+        {candidates.length > 0 && (
+          <button
+            onClick={() => setShowAllCandidates((v) => !v)}
+            className="ag-focus-ring text-ag-cinnabar hover:underline"
+          >
+            {showAllCandidates
+              ? t('workbench.candidatesOnlyWindow')
+              : t('workbench.candidatesShowAll').replace('{n}', String(candidates.length))}
+          </button>
+        )}
+      </div>
       {dropped > 0 && <div className="mb-2"><RelationNote dropped={dropped} /></div>}
-      {candidates.length === 0 ? (
-        <EmptyState>{t('workbench.noCandidates')}</EmptyState>
+      {visibleCandidates.length === 0 ? (
+        <EmptyState>
+          {!showAllCandidates && otherPending > 0
+            ? t('workbench.noCandidatesHere').replace('{n}', String(otherPending))
+            : t('workbench.noCandidates')}
+        </EmptyState>
       ) : (
         <div className="flex flex-col gap-cardgap">
-          {candidates.map((c) => {
+          {visibleCandidates.map((c) => {
             const twin = sameNameNode(c)
             return (
               <div key={c.id} className="rounded-card border border-ag-line1 bg-ag-bg3 p-card">
@@ -797,7 +834,7 @@ export default function Workbench() {
           <div className={`${narrow ? 'w-full' : 'w-[460px] shrink-0'} flex flex-col min-w-0 bg-ag-bg2`} ref={editorFocusRef}>
             <QuoteStrip quote={quoteDraft} onClear={() => setQuoteDraft('')} />
             <div className="shrink-0 flex border-b border-ag-line1 bg-ag-bg1">
-              {([['text', t('workbench.textTab')], ['candidates', `${t('workbench.candidates')} (${candidates.length})`]] as const).map(([k, label]) => (
+              {([['text', t('workbench.textTab')], ['candidates', `${t('workbench.candidates')} (${visibleCandidates.length})`]] as const).map(([k, label]) => (
                 <button
                   key={k}
                   onClick={() => setTab(k)}
@@ -808,35 +845,37 @@ export default function Workbench() {
               ))}
             </div>
             {tab === 'text' ? (
-              page ? (
-                <div className="flex-1 min-h-0 flex flex-col">
-                  {pageLoading && (
-                    <div className="shrink-0 flex items-center gap-2 px-3 py-1 border-b border-ag-line1 bg-ag-bg2" role="status">
-                      <span className="inline-block w-1.5 h-1.5 rounded-dot bg-ag-cinnabar animate-pulse" aria-hidden="true" />
-                      <span className="text-caption text-ag-ink3">
-                        {t('workbench.loadingPage').replace('{n}', String(pageNo))}
-                      </span>
-                    </div>
-                  )}
-                  <LayoutBar
-                    layout={page.layout}
-                    structured={structuredText}
-                    onToggle={setStructuredText}
-                    onRelayout={() => void doRelayout()}
-                  />
-                  <div className="flex-1 min-h-0">
-                    <PageTextEditor
-                      text={structuredText ? (page.layout_text || page.text) : page.text}
-                      onSave={(text) => void saveText(text)}
-                      onQuote={setQuoteDraft}
-                      onDirtyChange={setDirty}
-                      saving={false}
-                    />
+              <div className="flex-1 min-h-0 flex flex-col">
+                {pageLoading && (
+                  <div className="shrink-0 flex items-center gap-2 px-3 py-1 border-b border-ag-line1 bg-ag-bg2" role="status">
+                    <span className="inline-block w-1.5 h-1.5 rounded-dot bg-ag-cinnabar animate-pulse" aria-hidden="true" />
+                    <span className="text-caption text-ag-ink3">
+                      {t('workbench.loadingPage').replace('{n}', String(pageNo))}
+                    </span>
                   </div>
-                </div>
-              ) : (
-                <div className="p-6"><EmptyState>{t('workbench.noPageText')}</EmptyState></div>
-              )
+                )}
+                {page ? (
+                  <>
+                    <LayoutBar
+                      layout={page.layout}
+                      structured={structuredText}
+                      onToggle={setStructuredText}
+                      onRelayout={() => void doRelayout()}
+                    />
+                    <div className="flex-1 min-h-0">
+                      <PageTextEditor
+                        text={structuredText ? (page.layout_text || page.text) : page.text}
+                        onSave={(text) => void saveText(text)}
+                        onQuote={setQuoteDraft}
+                        onDirtyChange={setDirty}
+                        saving={false}
+                      />
+                    </div>
+                  </>
+                ) : (
+                  <div className="p-6"><EmptyState>{t('workbench.noPageText')}</EmptyState></div>
+                )}
+              </div>
             ) : candidatePanel}
             <ConfirmedSummary
               nodes={nodes}

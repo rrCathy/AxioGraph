@@ -16,7 +16,11 @@ class StructureData(BaseModel):
     publisher: str | None = None
     offset: float | None = None
     source: str | None = None
+    # Editor view: top-level entries only.
     toc: list[dict] = []
+    # Navigation tree: every level. Kept separately so saving the editor
+    # never flattens the TOC tab.
+    toc_full: list[dict] = []
 
 
 class TocPageRequest(BaseModel):
@@ -35,6 +39,8 @@ def _require_book(book_id: str):
 @router.get("/api/books/{book_id}/structure")
 def get_structure(book_id: str):
     _require_book(book_id)
+    # New books have no row yet; derive a draft from bookmarks / a local TOC.
+    bs.ensure_structure(book_id)
     st = bs.get_structure(book_id)
     if st is None:
         return {"title": None, "author": None, "publisher": None, "offset": None,
@@ -61,7 +67,17 @@ def detect_structure(book_id: str, x_task_id: str | None = Header(default=None))
 @router.post("/api/books/{book_id}/structure")
 def save_structure(book_id: str, body: StructureData):
     _require_book(book_id)
-    bs.save_structure(book_id, body.model_dump())
+    data = body.model_dump()
+    # The structure editor owns the top-level `toc` only. Never let one of its
+    # saves shrink the full navigation outline used by the TOC tab — older
+    # clients (and older saved data) used to carry just `toc`, and a save from
+    # the editor would silently flatten the whole tree.
+    old = bs.get_structure(book_id) or {}
+    old_full = old.get("toc_full") or old.get("toc") or []
+    new_full = data.get("toc_full") or []
+    if len(new_full) < len(old_full):
+        data["toc_full"] = old_full
+    bs.save_structure(book_id, data)
     return bs.get_structure(book_id)
 
 
