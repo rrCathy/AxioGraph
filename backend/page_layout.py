@@ -41,6 +41,11 @@ _TEX_BRACE_FRAGMENT_RE = re.compile(r"(?:^|\s)(?:9|33)(?=[A-Za-z(])")
 # not a readable transcript — no amount of line sorting will fix it.
 _MATH_ORPHAN_RE = re.compile(
     r"[\u221a\u2a38\u2208\u21d2\u2243\u228a\u0338]|^[0-9]{1,2}$")
+# TeX emits a display formula's big operator (⋂ / ∑ / ∫ ...) as its OWN
+# one-glyph text line, a few points above the line carrying its limits. The
+# layout model's formula region usually starts just below that glyph, so the
+# operator misses _center_in() by a hair and lands in a stray "[P] ∩" block.
+_BIGOP_RE = re.compile(r"^[\u2211\u220f\u222b\u2210\u2229\u222a\u22c2\u22c3\u2a00\u2a01\u2a02\u2a04\u2a06]$")
 
 
 def _tidy_latex(latex: str) -> str:
@@ -63,7 +68,11 @@ def _clean(text: str) -> str:
     # TeX radicals are separate glyphs; a run of them is one broken radical,
     # not a nested root. Collapse before whitespace normalization.
     text = re.sub(r"(?:\u221a\s*){2,}", "\u221a", text)
-    return re.sub(r"\s+", " ", text).strip()
+    text = re.sub(r"\s+", " ", text).strip()
+    # Limits of a big operator live on separate text rows; joining the rows
+    # with a space used to leave "∩ _{E⊂N◁G} N" in the editable text.
+    return re.sub(r"([\u2211\u220f\u222b\u2229\u222a\u22c2\u22c3])\s+(?=[_^]\{)",
+                  r"\1", text)
 
 
 def _line_text_with_scripts(line: dict) -> str:
@@ -158,6 +167,32 @@ def _center_in(inner: list[float], outer: list[float], pad: float = 3.0) -> bool
             and outer[1] - pad <= cy <= outer[3] + pad)
 
 
+def _attach_bigops(rows: list[dict], reg: dict, inside: list, used: set) -> list[float]:
+    """Give a formula region back the one-glyph big operator above it.
+
+    TeX puts ⋂/∑/∫ on a separate line whose centre falls just outside the
+    ONNX formula box. Left alone it becomes an ungrouped "[P] ∩" block and the
+    LaTeX crop loses the operator entirely. Only single-glyph operator lines
+    are attached, so ordinary prose lines can never be pulled in.
+    """
+    if reg["label"] != "formula" or not inside:
+        return reg["bbox"]
+    rx0, ry0, rx1, ry1 = reg["bbox"]
+    have = {i for i, _ in inside}
+    box = fitz.Rect(reg["bbox"])
+    for i, r in enumerate(rows):
+        if i in have or i in used:
+            continue
+        if not _BIGOP_RE.match((r.get("text") or "").strip()):
+            continue
+        cx = (r["bbox"][0] + r["bbox"][2]) / 2
+        cy = (r["bbox"][1] + r["bbox"][3]) / 2
+        if rx0 - 12 <= cx <= rx1 + 12 and ry0 - 24 <= cy <= ry1 + 12:
+            inside.append((i, r))
+            box |= fitz.Rect(r["bbox"])
+    return [round(v, 1) for v in box]
+
+
 def _cluster_image_boxes(page, pad=6.0, min_size=25.0) -> list[fitz.Rect]:
     """Complement the layout model: schematic frames drawn as 1x1 px line
     images are clustered into figure rectangles (union-find on padded rects)."""
@@ -249,7 +284,7 @@ def _looks_mathish(text: str) -> bool:
     return len(words) >= 2 and singles / len(words) >= 0.6
 
 
-LAYOUT_VERSION = 11
+LAYOUT_VERSION = 12
 
 
 def build_layout(book_id: str, page_no: int) -> dict:
@@ -309,6 +344,7 @@ def build_layout(book_id: str, page_no: int) -> dict:
                   if _center_in(r["bbox"], reg["bbox"])]
         if not inside:
             continue
+        box = _attach_bigops(rows, reg, inside, used)
         used.update(i for i, _ in inside)
         # Big braces, sub/superscripts and math glyphs sit on slightly different
         # baselines than the surrounding prose. Bin by visual row (~6pt) before
@@ -321,7 +357,7 @@ def build_layout(book_id: str, page_no: int) -> dict:
         text = _clean(" ".join(r.get("text_math") or r["text"] for _, r in inside))
         if not text:
             continue
-        b: dict = {"type": kind, "text": text, "bbox": reg["bbox"],
+        b: dict = {"type": kind, "text": text, "bbox": box,
                    "origin": f"layout:{reg['label']}"}
         if kind == "H":
             b["level"] = 1 if reg["label"] == "title" else 2
@@ -396,7 +432,25 @@ def build_layout(book_id: str, page_no: int) -> dict:
         txt = b.get("text") or ""
         if re.search(r"[\u4e00-\u9fff]", txt):
             cjk = len(re.findall(r"[\u4e00-\u9fff]", txt))
-            if cjk > 4 or not _TEX_BRACE_FRAGMENT_RE.search(txt):
+            # A couple of Han characters inside a display formula are usually
+            # a condition or label ("H⊂G:子群"), not prose. The old rule
+            # required a TeX brace-fragment marker, which exists only on
+            # fragmented TeX PDFs — on a clean text layer it demoted EVERY
+            # formula containing Chinese to [P] and skipped LaTeX OCR.
+            han_ratio = cjk / max(1, len(txt))
+            # Centered display formulas are short; Chinese prose lines span the
+            # whole text column. The width test keeps this exemption narrow —
+            # without it long "有重根 ⇔ ..." lines become FORMULA blocks that
+            # texify cannot read (CJK inside the bitmap), which looks like a
+            # coverage regression without gaining any LaTeX.
+            bb = b.get("bbox") or [0, 0, 0, 0]
+            centered = (bb[2] - bb[0]) <= 0.55 * page.rect.width
+            # One or two Han characters are a label ("子群", "有限"); three or
+            # more are usually a Chinese phrase inside a diagram caption,
+            # which texify reliably mangles. Keep the exemption to labels.
+            mathish = (cjk <= 2 and han_ratio <= 0.2 and centered
+                       and _looks_mathish(txt))
+            if cjk > 4 or (not _TEX_BRACE_FRAGMENT_RE.search(txt) and not mathish):
                 b["type"] = "P"
                 b["origin"] += "->prose"
                 continue
