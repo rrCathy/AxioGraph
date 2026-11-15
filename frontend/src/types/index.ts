@@ -119,6 +119,21 @@ export interface PageLayout {
   layout_text?: string
 }
 
+/** Rule-based theorem-like environment detected on the page (no LLM). */
+export interface Environment {
+  kind: 'theorem' | 'definition' | 'lemma' | 'proposition' | 'corollary'
+    | 'example' | 'remark' | 'proof' | 'convention' | 'notation'
+    | 'problem' | 'warning' | 'exercise'
+  label: string
+  number: string | null
+  title: string | null
+  signal: 'font' | 'text'
+  bbox: [number, number, number, number]
+  text: string
+  /** Layout-block indexes the environment overlaps. */
+  blocks?: number[]
+}
+
 export interface PageDetail {
   book_id: string
   page_no: number
@@ -136,6 +151,7 @@ export interface PageDetail {
   layout_text?: string
   page_kind?: string
   needs_vision?: boolean
+  environments?: Environment[]
 }
 
 export interface Relation {

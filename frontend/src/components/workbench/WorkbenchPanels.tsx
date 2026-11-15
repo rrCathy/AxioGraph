@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import Button from '../ui/Button'
 import EmptyState from '../ui/EmptyState'
 import { EntityBadge } from '../ui/Badge'
-import type { ConfirmedNode, TextBlock, PageLayout } from '../../types'
+import type { ConfirmedNode, Environment, TextBlock, PageLayout } from '../../types'
 import type { LongTaskState } from '../../hooks/useLongTask'
 import { pageImageUrl } from '../../services/api'
 import { useI18n } from '../../i18n/useI18n'
@@ -29,15 +29,27 @@ export function QuoteStrip({ quote, onClear }: { quote: string; onClear: () => v
 
 const SHEET_CHROME = 30 // page-sheet padding + border, both sides
 
+// Display order and bilingual labels for theorem-like environments.
+const ENV_ORDER: Array<[Environment['kind'], string, string]> = [
+  ['theorem', '定理', 'Thm'], ['lemma', '引理', 'Lem'],
+  ['proposition', '命题', 'Prop'], ['corollary', '推论', 'Cor'],
+  ['definition', '定义', 'Def'], ['example', '例', 'Ex'],
+  ['remark', '注记', 'Rmk'], ['notation', '记号', 'Not'],
+  ['convention', '约定', 'Conv'], ['problem', '问题', 'Q'],
+  ['exercise', '习题', 'Exr'], ['warning', '警告', 'Warn'],
+  ['proof', '证明', 'Proof'],
+]
+
 export function LayoutBar({
-  layout, structured, onToggle, onRelayout,
+  layout, environments, structured, onToggle, onRelayout,
 }: {
   layout?: PageLayout | null
+  environments?: Environment[]
   structured: boolean
   onToggle: (v: boolean) => void
   onRelayout: () => void
 }) {
-  const { t } = useI18n()
+  const { t, lang } = useI18n()
   if (!layout) return null
   const c = layout.counts || {}
   const counts = t('workbench.layoutCounts')
@@ -48,11 +60,22 @@ export function LayoutBar({
     .replace('{d}', String(c.DIAGRAM ?? 0))
     .replace('{g}', String(c.FIGURE ?? 0))
   const chip = 'ag-focus-ring px-2 py-0.5 text-micro rounded-btn border transition-colors'
+  const envCounts = ENV_ORDER
+    .map(([kind, zh, en]) => [kind, lang === 'zh' ? zh : en,
+      (environments ?? []).filter((e) => e.kind === kind).length] as const)
+    .filter(([, , n]) => n > 0)
+    .map(([, label, n]) => `${label} ${n}`)
+    .join(' · ')
 
   return (
     <div className="shrink-0 flex items-center gap-2 px-3 py-1.5 border-b border-ag-line1 bg-ag-bg2 flex-wrap">
       <span className="text-caption text-ag-ink3">{t('workbench.layoutBar')}</span>
       <span className="ag-mono text-micro text-ag-ink2">{counts}</span>
+      {envCounts && (
+        <span className="ag-mono text-micro text-ag-cinnabar" title={t('workbench.envSummary')}>
+          {envCounts}
+        </span>
+      )}
       <span className={`text-micro px-1.5 py-0.5 rounded-badge border ${
         layout.page_kind === 'text_layer'
           ? 'border-ag-line2 text-ag-ink3'

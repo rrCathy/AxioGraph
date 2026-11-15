@@ -880,6 +880,7 @@ export default function Workbench() {
                   <>
                     <LayoutBar
                       layout={page.layout}
+                      environments={page.environments}
                       structured={structuredText}
                       onToggle={setStructuredText}
                       onRelayout={() => void doRelayout()}

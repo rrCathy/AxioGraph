@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pymupdf as fitz
 
+import env_service
 from config import settings
 from database import get_db
 
@@ -164,6 +165,11 @@ def get_page(book_id: str, page_no: int) -> dict | None:
     d["needs_vision"] = bool(layout["needs_vision"]) if layout else False
     d["text"] = d.get("text_corrected") or d.get("text_raw") or ""
     d["text_raw_present"] = bool(d.get("text_raw"))
+    # Rule-based theorem-environment detection (definition/theorem/proof/...).
+    # A derivation with its own memo cache -- never touches ensure_layout,
+    # costs ~70 ms on an uncached page and 0 ms once seen this session.
+    d["environments"] = env_service.detect_environments(
+        book_id, page_no, d["blocks"])
     # PDF point dimensions, so the frontend can overlay block bboxes on the
     # rendered page image using simple percentages.
     geom = _page_geometry(book_id, page_no)
