@@ -21,6 +21,11 @@ class Settings(BaseSettings):
     freeapi_embedding_model: str = "auto"
     freeapi_embedding_dim: int = 1024
 
+    # Local formula-to-LaTeX engine: "texify" (VikP/texify, 312M, best token
+    # F1 on im2latex-100K) or "pix2tex" (rapid-latex-ocr ONNX, the old engine).
+    # Both run fully offline on CPU; weights live under backend/models/.
+    formula_engine: str = "texify"
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         if not self.sqlite_path:

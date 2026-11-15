@@ -17,8 +17,12 @@ from pathlib import Path
 
 import pymupdf as fitz
 
+from config import settings
+
 LATEX_DIR = Path(__file__).resolve().parent / "models" / "latexocr"
 LATEX_FILES = ("encoder.onnx", "decoder.onnx", "image_resizer.onnx", "tokenizer.json")
+TEXIFY_DIR = Path(__file__).resolve().parent / "models" / "texify"
+TEXIFY_FILES = ("config.json", "model.safetensors", "tokenizer.json")
 
 _layout_model = None
 _ocr_engine = None
@@ -100,7 +104,70 @@ def ocr_page(page, zoom: float = 2.0) -> list[dict]:
 
 def latex_available() -> bool:
     """Formula-to-LaTeX works only when the weights are on disk."""
+    if settings.formula_engine == "texify" and texify_available():
+        return True
     return all((LATEX_DIR / f).exists() for f in LATEX_FILES)
+
+
+def texify_available() -> bool:
+    return all((TEXIFY_DIR / f).exists() for f in TEXIFY_FILES)
+
+
+class _TexifyAdapter:
+    """vikp/texify behind the same `(img) -> (latex, conf)` interface as the
+    pix2tex ONNX engine, so page_layout can switch engines transparently.
+
+    texify's repo ships a custom `VariableDonutImageProcessor` that current
+    transformers cannot auto-load; preprocessing is inlined instead: fit the
+    crop within 420x420 (white canvas, aspect preserved) and normalize with
+    ImageNet mean/std, matching texify's preprocessor_config.json.
+    """
+
+    MEAN = (0.485, 0.456, 0.406)
+    STD = (0.229, 0.224, 0.225)
+    MAX_SIZE = 420
+
+    def __init__(self):
+        import numpy as np
+        import torch
+        from transformers import AutoTokenizer, VisionEncoderDecoderModel
+
+        self._np = np
+        self._torch = torch
+        self.model = VisionEncoderDecoderModel.from_pretrained(
+            str(TEXIFY_DIR), torch_dtype=torch.float32)
+        self.tokenizer = AutoTokenizer.from_pretrained(str(TEXIFY_DIR))
+        self.model.eval()
+        self._start = self.model.config.decoder_start_token_id
+        self._unk = self.tokenizer.unk_token_id
+
+    def __call__(self, img):
+        np, torch = self._np, self._torch
+        if img.ndim == 2:  # grayscale crop -> RGB
+            img = np.stack([img] * 3, axis=-1)
+        h, w = img.shape[:2]
+        scale = min(self.MAX_SIZE / h, self.MAX_SIZE / w, 1.0)
+        nh, nw = max(1, round(h * scale)), max(1, round(w * scale))
+        from PIL import Image
+        resized = Image.fromarray(img.astype(np.uint8)).resize((nw, nh), Image.LANCZOS)
+        canvas = Image.new("RGB", (self.MAX_SIZE, self.MAX_SIZE), (255, 255, 255))
+        canvas.paste(resized, ((self.MAX_SIZE - nw) // 2, (self.MAX_SIZE - nh) // 2))
+        x = np.asarray(canvas, dtype=np.float32) / 255.0
+        x = (x - np.array(self.MEAN, dtype=np.float32)) / np.array(self.STD, dtype=np.float32)
+        pixel_values = torch.from_numpy(np.transpose(x, (2, 0, 1))[None])
+        with torch.inference_mode():
+            ids = self.model.generate(
+                pixel_values=pixel_values,
+                decoder_start_token_id=self._start,
+                max_new_tokens=1024,
+                bad_words_ids=[[self._unk]],
+            )
+        latex = self.tokenizer.batch_decode(ids, skip_special_tokens=True)[0].strip()
+        # texify wraps its output in display-math delimiters; the pipeline
+        # re-adds them itself, so strip both variants here.
+        latex = latex.removeprefix("$$").removesuffix("$$").strip()
+        latex = latex.removeprefix("$").removesuffix("$").strip()
+        return latex, 1.0
 
 
 def latex_engine():
@@ -109,6 +176,12 @@ def latex_engine():
         return None
     with _lock:
         if _latex_engine is None:
+            if settings.formula_engine == "texify" and texify_available():
+                try:
+                    _latex_engine = _TexifyAdapter()
+                    return _latex_engine
+                except Exception:
+                    pass  # fall back to pix2tex below
             from rapid_latex_ocr import LaTeXOCR
             _latex_engine = LaTeXOCR(
                 image_resizer_path=LATEX_DIR / "image_resizer.onnx",
@@ -142,6 +215,19 @@ def latex_valid(latex: str) -> bool:
     if "\\nonumber" in latex:
         return False
     if _EMPTY_STRUCT.search(latex):
+        return False
+    # Degenerate pix2tex output: a prose line fed to the formula model turns
+    # into hundreds of hallucinated \hat / \bf tokens. No real formula repeats
+    # one command this often.
+    cmds = re.findall(r"\\[a-zA-Z]+", latex)
+    if cmds:
+        counts: dict[str, int] = {}
+        for c in cmds:
+            counts[c] = counts.get(c, 0) + 1
+        top = max(counts.values())
+        if top >= 20 or (len(cmds) >= 12 and top / len(cmds) > 0.45):
+            return False
+    if re.search(r"(\\[a-zA-Z]+(?:\{[^{}]*\})?)\1{5,}", latex):
         return False
     # A bare equation number "(1.5)" read off a margin is not a formula.
     stripped = latex.replace("\\,", "").replace("\\ ", "").strip()

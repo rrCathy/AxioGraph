@@ -14,6 +14,8 @@ frontend/dist/
 *.db.*
 data/books/
 data/lightrag/
+data/bench_arxiv/
+data/bench_im2latex/
 data/*.kuzu
 
 # Agent / IDE runtime state (local only, not source)
