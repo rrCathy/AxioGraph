@@ -57,6 +57,11 @@ def _tidy_latex(latex: str) -> str:
     # editable text (and downstream token comparisons) if left in place.
     latex = re.sub(r"(?:~|\\,|\\;|\\:|\\ ){3,}", " ", latex)
     latex = re.sub(r"[~\s]+$", "", latex)
+    # texify wraps output in $$..$$ and sometimes leaves a stray "$" before
+    # the sentence period ("X^3+aX+b=0$."), or separates several equations
+    # with them. render_layout_text adds its own delimiters, so any bare $
+    # here only corrupts the editable text. Keep escaped \$ (currency).
+    latex = re.sub(r"(?<!\\)\$+", "", latex)
     return latex.strip()
 
 

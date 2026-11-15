@@ -225,7 +225,13 @@ def latex_valid(latex: str) -> bool:
         for c in cmds:
             counts[c] = counts.get(c, 0) + 1
         top = max(counts.values())
-        if top >= 20 or (len(cmds) >= 12 and top / len(cmds) > 0.45):
+        # A long real formula legitimately repeats \mathrm / \operatorname
+        # once per identifier (p300: 9 of 12 commands are \mathrm, yet the
+        # LaTeX is correct). Hallucinated prose instead repeats ONE decorative
+        # command dozens of times with almost no command variety. Require low
+        # variety as well as a high share before calling it a hallucination.
+        if top >= 20 or (len(cmds) >= 12 and top / len(cmds) > 0.45
+                         and len(counts) <= 3):
             return False
     if re.search(r"(\\[a-zA-Z]+(?:\{[^{}]*\})?)\1{5,}", latex):
         return False
