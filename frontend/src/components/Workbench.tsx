@@ -10,7 +10,7 @@ import { EntityBadge, StatusBadge } from './ui/Badge'
 import PageTextEditor from './PageTextEditor'
 import { useLongTask } from '../hooks/useLongTask'
 import {
-  QuoteStrip, PageViewer, LayoutBar, LongTaskStatus, UndoToast,
+  QuoteStrip, PageViewer, LayoutBar, EnvironmentList, LongTaskStatus, UndoToast,
   MergePreview, RelationNote, ConfirmedSummary,
 } from './workbench/WorkbenchPanels'
 import StructurePanel from './workbench/StructurePanel'
@@ -58,6 +58,8 @@ export default function Workbench() {
   const [autoWindowSize, setAutoWindowSize] = useState(2)
   const [autoChapters, setAutoChapters] = useState<TocItem[] | null>(null)
   const [structuredText, setStructuredText] = useState(true)
+  const [envPanelOpen, setEnvPanelOpen] = useState(false)
+  const [activeEnvIndex, setActiveEnvIndex] = useState<number | null>(null)
 
   const { state: task, start, setPhase, stop, elapsedLabel } = useLongTask(75)
   const abortRef = useRef<AbortController | null>(null)
@@ -131,6 +133,8 @@ export default function Workbench() {
     // Clear only the extracted text, never the original page image. Showing
     // the previous page's text under a new page reads as "recognition lagged".
     setPage(null)
+    setActiveEnvIndex(null)
+    setEnvPanelOpen(false)
     // Stage 1 (milliseconds): geometry -> the rendered page shows up at once.
     void api.getPageMeta(bookId, n).then((meta) => {
       if (pageReqRef.current !== req) return
@@ -845,6 +849,13 @@ export default function Workbench() {
                 pageWidth={page?.page_width ?? pageGeom?.w}
                 pageHeight={page?.page_height ?? pageGeom?.h}
                 onBlockClick={() => { setTab('text'); setNarrowView('text') }}
+                environments={page?.environments ?? []}
+                activeIndex={activeEnvIndex}
+                onPick={(i) => {
+                  setActiveEnvIndex(i)
+                  setEnvPanelOpen(true)
+                  setTab('text')
+                }}
               />
             ) : (
               <div className="p-6"><EmptyState>{t('workbench.noBook')}</EmptyState></div>
@@ -884,7 +895,16 @@ export default function Workbench() {
                       structured={structuredText}
                       onToggle={setStructuredText}
                       onRelayout={() => void doRelayout()}
+                      onShowEnvs={(v) => { setEnvPanelOpen(v); setTab('text') }}
                     />
+                    {envPanelOpen && (
+                      <EnvironmentList
+                        environments={page.environments ?? []}
+                        activeIndex={activeEnvIndex}
+                        onPick={setActiveEnvIndex}
+                        onClose={() => { setEnvPanelOpen(false); setActiveEnvIndex(null) }}
+                      />
+                    )}
                     <div className="flex-1 min-h-0">
                       <PageTextEditor
                         text={structuredText ? (page.layout_text || page.text) : page.text}

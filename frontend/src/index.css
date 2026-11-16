@@ -130,6 +130,30 @@
   color: var(--ag-quote-rail);
 }
 
+/* ─── Theorem-environment overlay on the original page ─────────── */
+.ag-env-box {
+  position: absolute;
+  pointer-events: auto;
+  border: 1.5px solid;
+  border-radius: 2px;
+  cursor: pointer;
+  opacity: .85;
+  transition: opacity .12s, box-shadow .12s;
+}
+.ag-env-box:hover { opacity: 1; box-shadow: 0 0 0 2px var(--ag-bg-0); }
+.ag-env-box:focus-visible { outline: 2px solid var(--ag-cinnabar); outline-offset: 1px; }
+.ag-env-box-tag {
+  position: absolute;
+  top: -15px; left: -1.5px;
+  padding: 0 4px;
+  font-family: 'AG Mono', monospace;
+  font-size: 10px;
+  line-height: 15px;
+  color: var(--ag-on-cinnabar);
+  white-space: nowrap;
+  border-radius: 2px 2px 0 0;
+}
+
 /* ─── Quote strip / quote marks ──────────────────────── */
 .ag-quote {
   border-left: 2px solid var(--ag-quote-rail);

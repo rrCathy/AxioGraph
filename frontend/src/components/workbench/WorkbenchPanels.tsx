@@ -31,23 +31,41 @@ const SHEET_CHROME = 30 // page-sheet padding + border, both sides
 
 // Display order and bilingual labels for theorem-like environments.
 const ENV_ORDER: Array<[Environment['kind'], string, string]> = [
-  ['theorem', '定理', 'Thm'], ['lemma', '引理', 'Lem'],
+  ['axiom', '公理', 'Ax'], ['theorem', '定理', 'Thm'], ['lemma', '引理', 'Lem'],
   ['proposition', '命题', 'Prop'], ['corollary', '推论', 'Cor'],
   ['definition', '定义', 'Def'], ['example', '例', 'Ex'],
   ['remark', '注记', 'Rmk'], ['notation', '记号', 'Not'],
   ['convention', '约定', 'Conv'], ['problem', '问题', 'Q'],
   ['exercise', '习题', 'Exr'], ['warning', '警告', 'Warn'],
-  ['proof', '证明', 'Proof'],
+  ['conjecture', '猜想', 'Cj'], ['claim', '断言', 'Claim'],
+  ['fact', '事实', 'Fact'], ['assumption', '假设', 'Asm'],
+  ['principle', '原理', 'Pr'], ['proof', '证明', 'Proof'],
 ]
 
+// One stable color per environment family, reused by the page overlay and the
+// list so a row can always be matched to its box on the page.
+const ENV_COLOR: Partial<Record<Environment['kind'], string>> = {
+  axiom: 'var(--ag-status-ocr)',
+  theorem: 'var(--ag-entity-the)', lemma: 'var(--ag-entity-lem)',
+  proposition: 'var(--ag-entity-pro)', corollary: 'var(--ag-entity-cor)',
+  definition: 'var(--ag-entity-def)', example: 'var(--ag-entity-ex)',
+  proof: 'var(--ag-cinnabar)',
+}
+const envColor = (kind: Environment['kind']) => ENV_COLOR[kind] ?? 'var(--ag-ink-3)'
+const envLabel = (kind: Environment['kind'], lang: 'zh' | 'en') => {
+  const row = ENV_ORDER.find(([k]) => k === kind)
+  return row ? (lang === 'zh' ? row[1] : row[2]) : kind
+}
+
 export function LayoutBar({
-  layout, environments, structured, onToggle, onRelayout,
+  layout, environments, structured, onToggle, onRelayout, onShowEnvs,
 }: {
   layout?: PageLayout | null
   environments?: Environment[]
   structured: boolean
   onToggle: (v: boolean) => void
   onRelayout: () => void
+  onShowEnvs: (v: boolean) => void
 }) {
   const { t, lang } = useI18n()
   if (!layout) return null
@@ -72,9 +90,13 @@ export function LayoutBar({
       <span className="text-caption text-ag-ink3">{t('workbench.layoutBar')}</span>
       <span className="ag-mono text-micro text-ag-ink2">{counts}</span>
       {envCounts && (
-        <span className="ag-mono text-micro text-ag-cinnabar" title={t('workbench.envSummary')}>
+        <button
+          onClick={() => onShowEnvs(true)}
+          className="ag-focus-ring ag-mono text-micro text-ag-cinnabar hover:underline"
+          title={t('workbench.envSummary')}
+        >
           {envCounts}
-        </span>
+        </button>
       )}
       <span className={`text-micro px-1.5 py-0.5 rounded-badge border ${
         layout.page_kind === 'text_layer'
@@ -131,9 +153,81 @@ export function LayoutBar({
   )
 }
 
+/**
+ * Detected theorem-like environments on the current page. Each row is a real
+ * detection (kind + number/title + the raw first line + whether it came from a
+ * bold font or text/geometry), so the user can judge precision at a glance and
+ * click a row to highlight its box on the original page.
+ */
+export function EnvironmentList({
+  environments, activeIndex, onPick, onClose,
+}: {
+  environments: Environment[]
+  activeIndex: number | null
+  onPick: (i: number) => void
+  onClose: () => void
+}) {
+  const { t, lang } = useI18n()
+  const counts = ENV_ORDER
+    .map(([kind, zh, en]) => [lang === 'zh' ? zh : en,
+      environments.filter((e) => e.kind === kind).length] as const)
+    .filter(([, n]) => n > 0)
+    .map(([label, n]) => `${label} ${n}`)
+    .join(' · ')
+
+  return (
+    <div className="shrink-0 flex flex-col border-b border-ag-line1 bg-ag-bg1 max-h-[38%]">
+      <div className="shrink-0 flex items-center gap-2 px-3 py-1.5 border-b border-ag-line1">
+        <span className="text-caption text-ag-ink1 font-medium">{t('workbench.envPanelTitle')}</span>
+        <span className="ag-mono text-micro text-ag-cinnabar">{counts}</span>
+        <button
+          onClick={onClose}
+          className="ag-focus-ring ml-auto text-caption text-ag-ink3 hover:text-ag-ink1"
+          aria-label={t('workbench.envPanelClose')}
+        >
+          ✕
+        </button>
+      </div>
+      <div className="flex-1 overflow-auto">
+        {environments.length === 0 ? (
+          <div className="px-3 py-3 text-caption text-ag-ink3">{t('workbench.envNone')}</div>
+        ) : environments.map((e, i) => (
+          <button
+            key={i}
+            onClick={() => onPick(i)}
+            className={`ag-focus-ring w-full text-left px-3 py-1.5 flex items-start gap-2 border-b border-ag-line1 last:border-b-0 transition-colors ${
+              activeIndex === i ? 'bg-ag-quoteBg' : 'hover:bg-ag-bg2'}`}
+          >
+            <span
+              className="shrink-0 mt-0.5 px-1.5 py-0.5 text-micro rounded-badge border ag-mono"
+              style={{ color: envColor(e.kind), borderColor: envColor(e.kind) }}
+            >
+              {envLabel(e.kind, lang)}{e.number ? ` ${e.number}` : ''}
+            </span>
+            <span className="flex-1 min-w-0">
+              <span className="block text-caption text-ag-ink1 truncate">
+                {e.continuation && (
+                  <span className="text-micro text-ag-statusOcr mr-1">↳承上页</span>
+                )}
+                {e.title ? `${t('workbench.envTitle')} ${e.title} · ` : ''}
+                {e.text.split('\n')[0].slice(0, 80)}
+              </span>
+              <span className="block text-micro text-ag-ink3 ag-mono">
+                {e.signal === 'font' ? t('workbench.envSignalFont') : t('workbench.envSignalText')}
+                {' · y'}{e.bbox[1].toFixed(0)}–{e.bbox[3].toFixed(0)}
+              </span>
+            </span>
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 /** Full-page viewer: scroll + three zoom levels + quote overlay. */
 export function PageViewer({
   bookId, pageNo, blocks, quote, pageWidth, pageHeight, onBlockClick,
+  environments = [], activeIndex = null, onPick,
 }: {
   bookId: string
   pageNo: number
@@ -142,6 +236,9 @@ export function PageViewer({
   pageWidth?: number
   pageHeight?: number
   onBlockClick: () => void
+  environments?: Environment[]
+  activeIndex?: number | null
+  onPick?: (i: number) => void
 }) {
   const { t } = useI18n()
   const wellRef = useRef<HTMLDivElement>(null)
@@ -217,6 +314,30 @@ export function PageViewer({
               draggable={false}
               style={imgWidth ? { width: imgWidth, height: 'auto' } : undefined}
             />
+            {pageWidth && pageHeight && environments.map((e, i) => {
+              const active = activeIndex === i
+              const color = envColor(e.kind)
+              return (
+                <button
+                  key={i}
+                  onClick={() => onPick?.(i)}
+                  aria-label={`${envLabel(e.kind, 'zh')} ${e.number ?? ''}`}
+                  className="ag-env-box ag-focus-ring"
+                  style={{
+                    left: `${(e.bbox[0] / pageWidth) * 100}%`,
+                    top: `${(e.bbox[1] / pageHeight) * 100}%`,
+                    width: `${((e.bbox[2] - e.bbox[0]) / pageWidth) * 100}%`,
+                    height: `${((e.bbox[3] - e.bbox[1]) / pageHeight) * 100}%`,
+                    borderColor: color,
+                    background: active ? color : 'transparent',
+                  }}
+                >
+                  <span className="ag-env-box-tag" style={{ background: color }}>
+                    {envLabel(e.kind, 'zh')}{e.number ? ` ${e.number}` : ''}
+                  </span>
+                </button>
+              )
+            })}
             {hit && (
               <button
                 onClick={onBlockClick}

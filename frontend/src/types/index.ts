@@ -124,6 +124,7 @@ export interface Environment {
   kind: 'theorem' | 'definition' | 'lemma' | 'proposition' | 'corollary'
     | 'example' | 'remark' | 'proof' | 'convention' | 'notation'
     | 'problem' | 'warning' | 'exercise'
+    | 'axiom' | 'conjecture' | 'claim' | 'fact' | 'assumption' | 'principle'
   label: string
   number: string | null
   title: string | null
@@ -132,6 +133,9 @@ export interface Environment {
   text: string
   /** Layout-block indexes the environment overlaps. */
   blocks?: number[]
+  /** True when this piece is the continuation of an environment that
+   * started on the previous page (cross-page bodies). */
+  continuation?: boolean
 }
 
 export interface PageDetail {
