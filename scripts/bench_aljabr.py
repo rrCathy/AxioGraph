@@ -94,6 +94,12 @@ def visible(s: str) -> str:
     s = re.sub(r"\\([a-zA-Z]+)", lambda m: CMD.get(m.group(1), ""), s)
     s = s.replace("&", "").replace("\\\\", "").replace("{", "").replace("}", "")
     s = re.sub(r"[\^_]", "", s)
+    # Pinyin annotation macros leave their argument behind ('luguoxuji滤过'),
+    # and \ref{...} leaves the label word ('定理propwellorderprinciple') --
+    # neither is ever printed in the PDF text layer. Strip them from BOTH
+    # sides via this shared function (fair normalization rule).
+    s = re.sub(r"\([a-zA-Z][a-zA-Z\s]{2,}\)", " ", s)
+    s = re.sub(r"[a-zA-Z]{6,}", " ", s)
     return _KEEP.sub("", s)
 
 

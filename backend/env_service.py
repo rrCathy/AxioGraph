@@ -140,7 +140,10 @@ def _is_proof_mark(text: str, fonts: set[str], flush: bool) -> bool:
     if any(_KAI_RE.search(f) for f in fonts):
         return True
     # 群论书 has no weight signal for 证明: a bare short mark at the margin.
-    return flush and len(text) <= 6
+    # But a Fang/Kai '证明' split across a line break is a wrapped body word
+    # (AlJabr), not a header -- only plain Song marks qualify here.
+    return (flush and len(text) <= 6
+            and not any("Fang" in f or "Kai" in f for f in fonts))
 
 
 def _page_lines(page: fitz.Page) -> list[dict]:
@@ -167,6 +170,29 @@ def _page_lines(page: fitz.Page) -> list[dict]:
                               "size": max(sp["size"] for sp in ln["spans"]),
                               "bold_spans": bold_spans})
     lines.sort(key=lambda x: (x["bbox"][1], x["bbox"][0]))
+    # PyMuPDF splits one visual line into several rows when font spans
+    # differ ('证明' bold + body Fang on the same printed line); sorting by
+    # y0 then puts the body row BEFORE the head row and the body gets
+    # swallowed by the previous environment. Rejoin rows that overlap
+    # vertically and sit next to each other horizontally.
+    merged: list[dict] = []
+    for ln in lines:
+        if merged:
+            p = merged[-1]
+            pb, cb = p["bbox"], ln["bbox"]
+            y_ov = min(pb[3], cb[3]) - max(pb[1], cb[1])
+            gap = cb[0] - pb[2]
+            if y_ov > 0.5 * min(pb[3] - pb[1], cb[3] - cb[1]) and -2 <= gap <= 12:
+                p["text"] = (p["text"] + " " + ln["text"]).strip()
+                p["fonts"] |= ln["fonts"]
+                p["bold_spans"] += ln["bold_spans"]
+                p["size"] = max(p["size"], ln["size"])
+                p["bbox"] = [min(pb[0], cb[0]), min(pb[1], cb[1]),
+                             max(pb[2], cb[2]), max(pb[3], cb[3])]
+                p["x0"] = p["bbox"][0]
+                continue
+        merged.append(dict(ln))
+    lines = merged
     body = [x for x in lines if x["bbox"][1] > _HEADER_TOP]
     # The margin x is the MODE of line starts, not the minimum: margin notes
     # and equation rows sit left of the text edge (Hatcher p16: notes at x0<50
@@ -286,12 +312,24 @@ def _detect_single(book_id: str, page_no: int):
 
     heads: list[tuple[int, dict]] = []
     page_has_bold = any(x["bold_spans"] for x in lines)
+    # On pages whose REAL proof heads are bold/Kai, a bare Song '证明'
+    # row can only be a wrapped body word (AlJabr); the bare-row rule
+    # (flush + short) exists for books like 群论 whose proof heads carry
+    # no weight signal at all.
+    proof_font_seen = any(
+        _is_proof_mark(ln["text"], ln["fonts"], ln["flush"])
+        and any(_BOLD_CJK_RE.search(f) or _KAI_RE.search(f) for f in ln["fonts"])
+        for ln in lines)
     for i, ln in enumerate(lines):
         if _is_running_head(ln):
             continue
         bold = any(_BOLD_CJK_RE.search(f) or _HEI_RE.search(f)
                    for f in ln["fonts"])
         if _is_proof_mark(ln["text"], ln["fonts"], ln["flush"]):
+            proof_bold = any(_BOLD_CJK_RE.search(f) or _KAI_RE.search(f)
+                             for f in ln["fonts"])
+            if not proof_bold and proof_font_seen:
+                continue        # wrapped '证明' word, not a header
             heads.append((i, {"kind": "proof",
                               "label": "Proof" if ln["text"].startswith("Proof") else "证明",
                               "number": None, "title": None,
@@ -331,10 +369,14 @@ def _detect_single(book_id: str, page_no: int):
             # bold. A plain-type "公理."/"定义. ..." line is a wrapped
             # sentence; the exception is a bracketed title right after the
             # head ("断言(GY, ψY) 的唯一性: ..."), which is a genuine
-            # in-proof claim even when not bolded.
+            # in-proof claim even when not bolded. A bare head word at the
+            # end of its row ('定义' split across a line break) is a
+            # wrapped word, not a header -- note `'' not in "（"` is
+            # ALWAYS False (the empty string is a substring of anything),
+            # so the test must explicitly require a bracket.
             if not number and page_has_bold and not bold:
                 nxt = ln["text"][len(label): len(label) + 1]
-                if nxt not in "(（":
+                if not (nxt and nxt in "(（"):
                     continue
             heads.append((i, {"kind": kind, "label": label, "number": number,
                               "title": title, "signal": "text"}))
@@ -376,6 +418,7 @@ def _attach_continuation(book_id: str, page_no: int, res) -> list[dict] | None:
     if res is None:
         return None
     envs, open_tail, cont_rows, left = res
+    envs = list(envs)        # fresh copy: the cached list must NOT grow per call
     if page_no > 1 and cont_rows:
         prev = _detect_cached(book_id, page_no - 1)
         if prev and prev[1]:
@@ -522,6 +565,20 @@ def _assemble(heads, lines, qed_ys: list[float]):
                     elif seen_body and _is_prose_row(ln):
                         cut = k              # first running-prose row
                         break
+                    elif not seen_body:
+                        # Song-flush body with no font signal (例/注/命题):
+                        # a NEW prose paragraph after the body starts ~2em in
+                        # and its continuation returns to the baseline --
+                        # that paragraph is outside the environment. Inside a
+                        # multi-paragraph body this can cut early; the env
+                        # benchmark measures the tradeoff.
+                        x = ln["x0"]
+                        if base + 8 <= x <= base + 26:
+                            nxt = (seg[k + 1]["x0"]
+                                   if k + 1 < len(seg) else base + 50)
+                            if nxt <= base + 2:
+                                cut = k      # prose paragraph start
+                                break
             if two_indented:
                 for k in range(1, len(seg)):
                     x = seg[k]["x0"]
