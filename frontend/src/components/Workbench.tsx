@@ -21,7 +21,7 @@ import AskDialog from './workbench/AskDialog'
 import AiReviewPanel from './workbench/AiReviewPanel'
 
 type RightTab = 'text' | 'candidates' | 'ai'
-type LeftTab = 'nav' | 'toc' | 'structure'
+type LeftTab = 'toc' | 'structure'
 
 interface UndoState { label: string; run: () => void }
 
@@ -52,7 +52,7 @@ export default function Workbench() {
   const [narrowView, setNarrowView] = useState<'page' | 'text'>('text')
 
   // Left function column: tab + narrow-screen drawer visibility
-  const [leftTab, setLeftTab] = useState<LeftTab>('nav')
+  const [leftTab, setLeftTab] = useState<LeftTab>('toc')
   const [funcOpen, setFuncOpen] = useState(false)
   const [structRefreshKey, setStructRefreshKey] = useState(0)
   const [autoOpen, setAutoOpen] = useState(false)
@@ -732,12 +732,14 @@ export default function Workbench() {
         >
           {[1, 2, 3].map((n) => <option key={n} value={n}>{n}</option>)}
         </select>
-        <span className="ag-mono text-micro text-ag-ink3 whitespace-nowrap">p{pageNo}–p{endPage}</span>
+        <span className="ag-mono text-micro text-ag-ink3 whitespace-nowrap">
+          {windowSize === 1 ? `p${pageNo}` : `p${pageNo}–p${endPage}`}
+        </span>
         <div className="ml-auto flex items-center gap-2 min-w-0">
           {page && <StatusBadge status={page.status} />}
           {msg && <span className="text-caption text-ag-ink3 truncate max-w-[240px]">{msg}</span>}
           {narrow && (
-            <Button size="sm" variant="ghost" onClick={() => setFuncOpen(!funcOpen)} aria-label={t('workbench.funcTitle')}>
+            <Button size="sm" variant="ghost" onClick={() => setFuncOpen(!funcOpen)} aria-label={t('workbench.funcTitle')} disabled={!bookId}>
               ☰
             </Button>
           )}
@@ -764,8 +766,10 @@ export default function Workbench() {
       )}
 
       <div className="flex-1 flex min-h-0">
-      {/* Left function column — docked on wide screens, drawer on narrow. */}
-      {(!narrow || funcOpen) && (
+      {/* Left function column — docked on wide screens, drawer on narrow.
+          Hidden entirely while no book is selected: dead buttons would just
+          be noise; the main pane's empty state carries the call to action. */}
+      {bookId && (!narrow || funcOpen) && (
         <>
           {narrow && funcOpen && (
             <div className="absolute inset-0 z-30 bg-black/40" onClick={() => setFuncOpen(false)} aria-hidden="true" />
@@ -776,8 +780,154 @@ export default function Workbench() {
               : 'shrink-0 w-[300px] border-r border-ag-line1 bg-ag-bg1 flex flex-col min-h-0'}
             aria-label={t('workbench.funcTitle')}
           >
+            {/* Primary actions sit above the tabs — the reader's daily loop
+                is these two buttons, not a third tab holding them. */}
+            <div className="shrink-0 flex flex-col gap-1.5 px-2.5 py-2.5 border-b border-ag-line1">
+              <Button
+                variant="primary"
+                className="w-full"
+                disabled={!total || task.active}
+                onClick={() => void analyze()}
+              >
+                {t('workbench.analyze')}
+              </Button>
+              <Button
+                className="w-full"
+                disabled={!total || task.active || aiBusy}
+                loading={aiBusy}
+                onClick={() => void markPageRead()}
+              >
+                {t('ai.readBtn')}
+              </Button>
+              {/* Low-frequency / debug actions live behind a disclosure. */}
+              {!moreActionsOpen && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="w-full"
+                  onClick={() => setMoreActionsOpen(true)}
+                >
+                  {t('workbench.moreActions')} ▾
+                </Button>
+              )}
+              {moreActionsOpen && (
+                <>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    <Button size="sm" disabled={!total || task.active} onClick={() => void runVisionOcr()}>
+                      {t('workbench.visionOcr')}
+                    </Button>
+                    <Button size="sm" disabled={!total || task.active} onClick={() => void runOcr()}>
+                      {t('workbench.ocr')}
+                    </Button>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant={autoOpen ? 'primary' : 'ghost'}
+                    disabled={!total}
+                    onClick={() => setAutoOpen(!autoOpen)}
+                  >
+                    {autoOpen ? t('workbench.autoClose') : t('workbench.autoTitle')}
+                  </Button>
+                  <Button size="sm" variant="ghost" disabled={task.active} onClick={() => setConfirmReimport(true)}>
+                    {t('workbench.reimport')}
+                  </Button>
+                  <Button size="sm" variant="ghost" className="w-full" onClick={() => setMoreActionsOpen(false)}>
+                    {t('workbench.moreActions')} ▴
+                  </Button>
+                </>
+              )}
+            </div>
+
+            {autoOpen && (
+              <div className="shrink-0 mx-2.5 mb-2.5 rounded-card border border-ag-line2 bg-ag-bg2 p-2.5 flex flex-col gap-2">
+                <span className="text-caption font-medium text-ag-ink2">{t('workbench.autoTitle')}</span>
+                {autoChapters && (
+                  <select
+                    defaultValue=""
+                    onChange={(e) => onChapterSelect(e.target.value)}
+                    className="ag-focus-ring text-caption bg-ag-bg3 border border-ag-line2 rounded-btn px-2 py-1 w-full min-w-0 truncate"
+                    aria-label={t('workbench.autoChapter')}
+                  >
+                    <option value="" disabled>{t('workbench.autoChapter')}</option>
+                    {autoChapters.map((c, i) => (
+                      <option key={i} value={i}>
+                        {'\u3000'.repeat(Math.max(0, c.level - 1))}{c.title} (p{c.pdf_page})
+                      </option>
+                    ))}
+                  </select>
+                )}
+                <div className="flex items-center gap-1.5 text-caption text-ag-ink3">
+                  <span className="shrink-0">{t('workbench.autoRangeFrom')}</span>
+                  <input
+                    type="number" min={1} max={total || undefined} value={autoRange.start}
+                    onChange={(e) => setAutoRange((r) => ({ ...r, start: Number(e.target.value) }))}
+                    className="ag-focus-ring text-caption ag-mono bg-ag-bg3 border border-ag-line2 rounded-btn px-1.5 py-1 w-14"
+                    aria-label={t('workbench.autoRangeFrom')}
+                  />
+                  <span className="shrink-0">–</span>
+                  <input
+                    type="number" min={1} max={total || undefined} value={autoRange.end}
+                    onChange={(e) => setAutoRange((r) => ({ ...r, end: Number(e.target.value) }))}
+                    className="ag-focus-ring text-caption ag-mono bg-ag-bg3 border border-ag-line2 rounded-btn px-1.5 py-1 w-14"
+                    aria-label={t('workbench.autoRangeTo')}
+                  />
+                  <select
+                    value={autoWindowSize}
+                    onChange={(e) => setAutoWindowSize(Number(e.target.value))}
+                    className="ag-focus-ring text-caption bg-ag-bg3 border border-ag-line2 rounded-btn px-1 py-1"
+                    aria-label={t('workbench.window')}
+                  >
+                    {[1, 2, 3].map((n) => <option key={n} value={n}>{n}</option>)}
+                  </select>
+                </div>
+                {autoStatus?.status === 'running' ? (
+                  <div className="flex flex-col gap-1.5">
+                    <span className="text-caption text-ag-ink2 ag-mono" aria-live="polite">
+                      {t('workbench.autoProgress')
+                        .replace('{done}', String(Math.min(autoStatus.window_done + 1, autoStatus.window_total)))
+                        .replace('{total}', String(autoStatus.window_total))}
+                    </span>
+                    {autoStatus.current_window && (
+                      <span className="text-caption text-ag-ink3 ag-mono">
+                        {t('workbench.autoCurrent')
+                          .replace('{s}', String(autoStatus.current_window[0]))
+                          .replace('{e}', String(autoStatus.current_window[1]))}
+                      </span>
+                    )}
+                    {autoStatus.failed_windows.length > 0 && (
+                      <span className="text-caption text-ag-statusOcr">
+                        {t('workbench.autoFailed').replace('{n}', String(autoStatus.failed_windows.length))}
+                      </span>
+                    )}
+                    <Button size="sm" onClick={stopAuto}>{t('workbench.autoStop')}</Button>
+                  </div>
+                ) : (
+                  <div className="flex flex-col gap-1.5">
+                    <Button size="sm" variant="primary" disabled={!total} onClick={() => void startAuto(autoRange.start, autoRange.end)}>
+                      {t('workbench.autoStart')}
+                    </Button>
+                    {autoStatus && (autoStatus.status === 'cancelled' || autoStatus.status === 'error') && autoStatus.next_window != null && (
+                      <Button size="sm" onClick={() => void startAuto(autoStatus.next_window!, autoStatus.range[1])}>
+                        {t('workbench.autoResume')}
+                      </Button>
+                    )}
+                    {autoStatus && autoStatus.failed_windows.length > 0 && (
+                      <span className="text-caption text-ag-statusOcr">
+                        {t('workbench.autoFailed').replace('{n}', String(autoStatus.failed_windows.length))}
+                      </span>
+                    )}
+                    {autoStatus && autoStatus.status === 'done' && (
+                      <span className="text-caption text-ag-ink3 ag-mono">
+                        {autoStatus.window_done}/{autoStatus.window_total}
+                      </span>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
             <div className="shrink-0 flex items-center border-b border-ag-line1">
-              {([['nav', t('workbench.funcNav')], ['toc', t('workbench.tocTitle')], ['structure', t('workbench.structure')]] as [LeftTab, string][]).map(([k, label]) => (
+              {([['toc', t('workbench.tocTitle')], ['structure', t('workbench.structure')]] as [LeftTab, string][]).map(([k, label]) => (
                 <button
                   key={k}
                   onClick={() => setLeftTab(k)}
@@ -801,159 +951,6 @@ export default function Workbench() {
             </div>
 
             <div className="flex-1 min-h-0 flex flex-col">
-              {leftTab === 'nav' && (
-                <div className="flex-1 min-h-0 flex flex-col overflow-auto">
-                  <div className="shrink-0 flex flex-col gap-1.5 px-2.5 py-2.5">
-                    <Button
-                      variant="primary"
-                      className="w-full"
-                      disabled={!bookId || !total || task.active}
-                      onClick={() => void analyze()}
-                    >
-                      {t('workbench.analyze')}
-                    </Button>
-                    <Button
-                      className="w-full"
-                      disabled={!bookId || !total || task.active || aiBusy}
-                      loading={aiBusy}
-                      onClick={() => void markPageRead()}
-                    >
-                      {t('ai.readBtn')}
-                    </Button>
-                    {/* Low-frequency / debug actions live behind a disclosure;
-                        the reader's daily loop is just the two buttons above. */}
-                    {!moreActionsOpen && (
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        className="w-full"
-                        disabled={!bookId}
-                        onClick={() => setMoreActionsOpen(true)}
-                      >
-                        {t('workbench.moreActions')} ▾
-                      </Button>
-                    )}
-                    {moreActionsOpen && (
-                      <>
-                        <div className="grid grid-cols-2 gap-1.5">
-                          <Button size="sm" disabled={!bookId || !total || task.active} onClick={() => void runVisionOcr()}>
-                            {t('workbench.visionOcr')}
-                          </Button>
-                          <Button size="sm" disabled={!bookId || !total || task.active} onClick={() => void runOcr()}>
-                            {t('workbench.ocr')}
-                          </Button>
-                        </div>
-                        <Button
-                          size="sm"
-                          variant={autoOpen ? 'primary' : 'ghost'}
-                          disabled={!bookId || !total}
-                          onClick={() => setAutoOpen(!autoOpen)}
-                        >
-                          {autoOpen ? t('workbench.autoClose') : t('workbench.autoTitle')}
-                        </Button>
-                        <Button size="sm" variant="ghost" disabled={!bookId || task.active} onClick={() => setConfirmReimport(true)}>
-                          {t('workbench.reimport')}
-                        </Button>
-                        <Button size="sm" variant="ghost" className="w-full" onClick={() => setMoreActionsOpen(false)}>
-                          {t('workbench.moreActions')} ▴
-                        </Button>
-                      </>
-                    )}
-                  </div>
-
-                  {autoOpen && (
-                    <div className="shrink-0 mx-2.5 mb-2.5 rounded-card border border-ag-line2 bg-ag-bg2 p-2.5 flex flex-col gap-2">
-                      <span className="text-caption font-medium text-ag-ink2">{t('workbench.autoTitle')}</span>
-                      {autoChapters && (
-                        <select
-                          defaultValue=""
-                          onChange={(e) => onChapterSelect(e.target.value)}
-                          className="ag-focus-ring text-caption bg-ag-bg3 border border-ag-line2 rounded-btn px-2 py-1 w-full min-w-0 truncate"
-                          aria-label={t('workbench.autoChapter')}
-                        >
-                          <option value="" disabled>{t('workbench.autoChapter')}</option>
-                          {autoChapters.map((c, i) => (
-                            <option key={i} value={i}>
-                              {'\u3000'.repeat(Math.max(0, c.level - 1))}{c.title} (p{c.pdf_page})
-                            </option>
-                          ))}
-                        </select>
-                      )}
-                      <div className="flex items-center gap-1.5 text-caption text-ag-ink3">
-                        <span className="shrink-0">{t('workbench.autoRangeFrom')}</span>
-                        <input
-                          type="number" min={1} max={total || undefined} value={autoRange.start}
-                          onChange={(e) => setAutoRange((r) => ({ ...r, start: Number(e.target.value) }))}
-                          className="ag-focus-ring text-caption ag-mono bg-ag-bg3 border border-ag-line2 rounded-btn px-1.5 py-1 w-14"
-                          aria-label={t('workbench.autoRangeFrom')}
-                        />
-                        <span className="shrink-0">–</span>
-                        <input
-                          type="number" min={1} max={total || undefined} value={autoRange.end}
-                          onChange={(e) => setAutoRange((r) => ({ ...r, end: Number(e.target.value) }))}
-                          className="ag-focus-ring text-caption ag-mono bg-ag-bg3 border border-ag-line2 rounded-btn px-1.5 py-1 w-14"
-                          aria-label={t('workbench.autoRangeTo')}
-                        />
-                        <select
-                          value={autoWindowSize}
-                          onChange={(e) => setAutoWindowSize(Number(e.target.value))}
-                          className="ag-focus-ring text-caption bg-ag-bg3 border border-ag-line2 rounded-btn px-1 py-1"
-                          aria-label={t('workbench.window')}
-                        >
-                          {[1, 2, 3].map((n) => <option key={n} value={n}>{n}</option>)}
-                        </select>
-                      </div>
-                      {autoStatus?.status === 'running' ? (
-                        <div className="flex flex-col gap-1.5">
-                          <span className="text-caption text-ag-ink2 ag-mono" aria-live="polite">
-                            {t('workbench.autoProgress')
-                              .replace('{done}', String(Math.min(autoStatus.window_done + 1, autoStatus.window_total)))
-                              .replace('{total}', String(autoStatus.window_total))}
-                          </span>
-                          {autoStatus.current_window && (
-                            <span className="text-caption text-ag-ink3 ag-mono">
-                              {t('workbench.autoCurrent')
-                                .replace('{s}', String(autoStatus.current_window[0]))
-                                .replace('{e}', String(autoStatus.current_window[1]))}
-                            </span>
-                          )}
-                          {autoStatus.failed_windows.length > 0 && (
-                            <span className="text-caption text-ag-statusOcr">
-                              {t('workbench.autoFailed').replace('{n}', String(autoStatus.failed_windows.length))}
-                            </span>
-                          )}
-                          <Button size="sm" onClick={stopAuto}>{t('workbench.autoStop')}</Button>
-                        </div>
-                      ) : (
-                        <div className="flex flex-col gap-1.5">
-                          <Button size="sm" variant="primary" disabled={!bookId || !total} onClick={() => void startAuto(autoRange.start, autoRange.end)}>
-                            {t('workbench.autoStart')}
-                          </Button>
-                          {autoStatus && (autoStatus.status === 'cancelled' || autoStatus.status === 'error') && autoStatus.next_window != null && (
-                            <Button size="sm" onClick={() => void startAuto(autoStatus.next_window!, autoStatus.range[1])}>
-                              {t('workbench.autoResume')}
-                            </Button>
-                          )}
-                          {autoStatus && autoStatus.failed_windows.length > 0 && (
-                            <span className="text-caption text-ag-statusOcr">
-                              {t('workbench.autoFailed').replace('{n}', String(autoStatus.failed_windows.length))}
-                            </span>
-                          )}
-                          {autoStatus && autoStatus.status === 'done' && (
-                            <span className="text-caption text-ag-ink3 ag-mono">
-                              {autoStatus.window_done}/{autoStatus.window_total}
-                            </span>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  <div className="mt-auto px-2.5 pb-2.5 pt-2 text-micro text-ag-ink3 leading-relaxed border-t border-ag-line1">
-                    {t('workbench.funcHint')}
-                  </div>
-                </div>
-              )}
               {leftTab === 'toc' && (
                 <div className="flex-1 min-h-0 overflow-auto">
                   <TocList
@@ -973,6 +970,10 @@ export default function Workbench() {
                   onConfirmed={() => setStructRefreshKey((k) => k + 1)}
                 />
               )}
+            </div>
+
+            <div className="shrink-0 px-2.5 py-2 text-micro text-ag-ink3 leading-relaxed border-t border-ag-line1">
+              {t('workbench.funcHint')}
             </div>
           </aside>
         </>
