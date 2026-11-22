@@ -4,8 +4,9 @@ import { readThemePalette, buildCyStyle } from '../theme/themePalette'
 import { THEME_EVENT } from '../theme/theme'
 import { entityKeyOf, ENTITY_META, type EntityKey } from '../theme/entityMeta'
 import GraphA11yPanel from './graph/GraphA11yPanel'
+import RecyclePanel from './graph/RecyclePanel'
 import { useAppStore } from '../stores/appStore'
-import { searchNodes } from '../services/api'
+import { searchNodes, getGraph, getTagList, batchDeleteNodes, batchAddTags, recycleRestore } from '../services/api'
 import { useI18n } from '../i18n/useI18n'
 
 // ─── Force simulation constants ───
@@ -21,14 +22,32 @@ export default function GraphView() {
   const containerRef = useRef<HTMLDivElement>(null)
   const cyRef = useRef<Core | null>(null)
   const rafRef = useRef<number | null>(null)
+  const startTimerRef = useRef<number | null>(null)
   const pinnedRef = useRef<Set<string>>(new Set())
   const velRef = useRef<Map<string, [number, number]>>(new Map())
   const runningRef = useRef(true)
 
   const [simRunning, setSimRunning] = useState(true)
-  const { graphData, selectedBookId, books, selectNode, selectBook, lang, selectedNodeId } = useAppStore()
+  const { graphData, setGraphData, selectedBookId, books, selectNode, selectBook, lang, selectedNodeId } = useAppStore()
   const selectedBook = books.find((b) => b.id === selectedBookId)
   const { t } = useI18n()
+
+  // The graph tab must load its own data: previously only the books-tab
+  // "查看图谱" button fetched it, so switching straight to the graph tab
+  // after promoting nodes showed an endless spinner ("打不开").
+  const [graphLoading, setGraphLoading] = useState(false)
+  const [loadSeq, setLoadSeq] = useState(0)
+  useEffect(() => {
+    if (!selectedBookId || graphData) { setGraphLoading(false); return }
+    let cancelled = false
+    setGraphLoading(true)
+    getGraph(selectedBookId)
+      .then((d) => { if (!cancelled) setGraphData(d) })
+      .catch(() => { /* keep the empty state; user can retry */ })
+      .finally(() => { if (!cancelled) setGraphLoading(false) })
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedBookId, graphData, loadSeq])
 
   // Translate a raw relation_type to the display label based on current language
   const getRelationLabel = useCallback((relationType: string): string => {
@@ -46,6 +65,34 @@ export default function GraphView() {
   const [typeFilter, setTypeFilter] = useState<EntityKey | null>(null)
   const [listMode, setListMode] = useState(false)
 
+  // ─── Graph management: select mode / tag filter / recycle bin ───
+  const [selectMode, setSelectMode] = useState(false)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [tagFilter, setTagFilter] = useState<string | null>(null) // "组:值"
+  const [tagGroups, setTagGroups] = useState<Record<string, string[]>>({})
+  const [recycleOpen, setRecycleOpen] = useState(false)
+  const [gvMsg, setGvMsg] = useState('')
+  const [gvUndo, setGvUndo] = useState<string[] | null>(null) // deleted ids
+  const [batchBusy, setBatchBusy] = useState(false)
+  const [tagDialogOpen, setTagDialogOpen] = useState(false)
+  const [tagGroupSel, setTagGroupSel] = useState('学科')
+  const [tagValueDraft, setTagValueDraft] = useState('')
+  // the cytoscape tap closure captures this ref — state alone would go stale
+  const selectModeRef = useRef(false)
+  useEffect(() => { selectModeRef.current = selectMode }, [selectMode])
+
+  const refreshGraph = useCallback(() => {
+    if (!selectedBookId) return
+    getGraph(selectedBookId).then(setGraphData).catch(() => {})
+  }, [selectedBookId, setGraphData])
+
+  useEffect(() => {
+    if (!selectedBookId) { setTagGroups({}); return }
+    getTagList(selectedBookId).then(setTagGroups).catch(() => {})
+  }, [selectedBookId, graphData])
+
+  useEffect(() => { if (!selectMode) { setSelectedIds(new Set()) } }, [selectMode])
+
   // Canvas cannot read CSS variables: re-apply concrete colours on theme change.
   useEffect(() => {
     const onChange = () => {
@@ -61,11 +108,20 @@ export default function GraphView() {
     if (!cy) return
     cy.batch(() => {
       cy.nodes().forEach((n) => {
-        n.toggleClass('dimmed', typeFilter !== null && n.data('entity_key') !== typeFilter)
+        const typeDim = typeFilter !== null && n.data('entity_key') !== typeFilter
+        let tagDim = false
+        if (tagFilter) {
+          const [g, v] = tagFilter.split(':')
+          let tags: Array<{ g: string; v: string }> = []
+          try { tags = JSON.parse(n.data('tags') || '[]') } catch { /* ignore */ }
+          tagDim = !tags.some((tp) => tp.g === g && tp.v === v)
+        }
+        n.toggleClass('dimmed', typeDim || tagDim)
+        n.toggleClass('ag-selected', selectedIds.has(n.id()))
       })
-      cy.edges().toggleClass('dimmed', typeFilter !== null)
+      cy.edges().toggleClass('dimmed', typeFilter !== null || tagFilter !== null)
     })
-  }, [typeFilter, graphData])
+  }, [typeFilter, tagFilter, selectedIds, graphData])
 
   // Debounced search
   useEffect(() => {
@@ -184,23 +240,27 @@ export default function GraphView() {
       fy[i] -= (py[i] - cntY) * CENTER_GRAVITY
     }
 
-    // Integrate with semi-implicit Euler + apply back to cytoscape
+    // Integrate with semi-implicit Euler + apply back to cytoscape.
+    // batch() coalesces the per-node position notifies into one render pass —
+    // without it a 200-node graph triggers 200 style recalcs per frame.
     const pinned = pinnedRef.current
     const vel = velRef.current
-    for (let i = 0; i < N; i++) {
-      const id = nodes[i].id()
-      if (pinned.has(id)) {
-        vel.set(id, [0, 0])
-        continue
+    cy.batch(() => {
+      for (let i = 0; i < N; i++) {
+        const id = nodes[i].id()
+        if (pinned.has(id)) {
+          vel.set(id, [0, 0])
+          continue
+        }
+        let [vx, vy] = vel.get(id) || [0, 0]
+        vx = (vx + fx[i]) * DAMPING
+        vy = (vy + fy[i]) * DAMPING
+        const sp = Math.sqrt(vx * vx + vy * vy)
+        if (sp > MAX_VELOCITY) { vx = (vx / sp) * MAX_VELOCITY; vy = (vy / sp) * MAX_VELOCITY }
+        vel.set(id, [vx, vy])
+        nodes[i].position({ x: px[i] + vx, y: py[i] + vy })
       }
-      let [vx, vy] = vel.get(id) || [0, 0]
-      vx = (vx + fx[i]) * DAMPING
-      vy = (vy + fy[i]) * DAMPING
-      const sp = Math.sqrt(vx * vx + vy * vy)
-      if (sp > MAX_VELOCITY) { vx = (vx / sp) * MAX_VELOCITY; vy = (vy / sp) * MAX_VELOCITY }
-      vel.set(id, [vx, vy])
-      nodes[i].position({ x: px[i] + vx, y: py[i] + vy })
-    }
+    })
 
     rafRef.current = requestAnimationFrame(() => forceTick(cy))
   }, [])
@@ -211,6 +271,7 @@ export default function GraphView() {
 
     // Stop previous sim
     if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = null }
+    if (startTimerRef.current) { window.clearTimeout(startTimerRef.current); startTimerRef.current = null }
     velRef.current.clear()
     pinnedRef.current.clear()
 
@@ -247,9 +308,19 @@ export default function GraphView() {
       cy.batch(() => cy.nodes().toggleClass('lod-low', low))
     })
 
-    // Tap → select node
-    cy.on('tap', 'node', (evt) => selectNode(evt.target.id()))
-    cy.on('tap', (evt) => { if (evt.target === cy) selectNode(null) })
+    // Tap → select node (or toggle batch selection in select mode)
+    cy.on('tap', 'node', (evt) => {
+      if (selectModeRef.current) {
+        setSelectedIds((prev) => {
+          const next = new Set(prev)
+          if (next.has(evt.target.id())) next.delete(evt.target.id())
+          else next.add(evt.target.id())
+          return next
+        })
+      }
+      selectNode(evt.target.id())
+    })
+    cy.on('tap', (evt) => { if (evt.target === cy && !selectModeRef.current) selectNode(null) })
 
     // Drag → pin node so physics doesn't fight user
     cy.on('grab', 'node', (evt) => pinnedRef.current.add(evt.target.id()))
@@ -288,7 +359,7 @@ export default function GraphView() {
     cy.layout({ name: 'cose', idealEdgeLength: 120, nodeOverlap: 20, animate: true } as any).run()
 
     // Start force simulation once cose settles (2s delay)
-    setTimeout(() => {
+    startTimerRef.current = window.setTimeout(() => {
       if (cy.destroyed()) return
       runningRef.current = true  // force simulation starts ON after load
       forceTick(cy)
@@ -299,8 +370,15 @@ export default function GraphView() {
     return () => {
       runningRef.current = false
       if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = null }
+      if (startTimerRef.current) { window.clearTimeout(startTimerRef.current); startTimerRef.current = null }
       containerRef.current?.removeEventListener('wheel', onWheel)
-      cy.destroy()
+      // cytoscape's renderer keeps its own rAF alive across destroy() and
+      // throws "Cannot read properties of null (reading 'notify')" when a
+      // frame lands mid-teardown. stop() halts that loop first.
+      try {
+        cy.stop()
+        cy.destroy()
+      } catch { /* already gone */ }
       cyRef.current = null
     }
   }, [graphData, forceTick])
@@ -324,6 +402,74 @@ export default function GraphView() {
     }
   }
 
+  // ─── Batch ops on the selected set ───
+  const batchDelete = async () => {
+    if (!selectedBookId || selectedIds.size === 0 || batchBusy) return
+    setBatchBusy(true)
+    try {
+      const ids = [...selectedIds]
+      const r = await batchDeleteNodes(selectedBookId, ids)
+      setSelectedIds(new Set())
+      refreshGraph()
+      setGvUndo(r.deleted || [])
+      setGvMsg(t('gm.deleted').replace('{n}', String(r.deleted?.length ?? 0)))
+    } catch (e) {
+      setGvMsg(String(e).slice(0, 110))
+    } finally {
+      setBatchBusy(false)
+    }
+  }
+
+  const undoBatchDelete = async () => {
+    if (!gvUndo) return
+    await recycleRestore(gvUndo)
+    setGvUndo(null)
+    setGvMsg(t('gm.undone'))
+    refreshGraph()
+  }
+
+  const applyBatchTags = async () => {
+    if (!selectedBookId || selectedIds.size === 0 || !tagValueDraft.trim() || batchBusy) return
+    setBatchBusy(true)
+    try {
+      await batchAddTags(selectedBookId, [...selectedIds],
+        [{ g: tagGroupSel, v: tagValueDraft.trim() }])
+      setTagDialogOpen(false)
+      setTagValueDraft('')
+      refreshGraph()
+      getTagList(selectedBookId).then(setTagGroups).catch(() => {})
+      setGvMsg(t('gm.tagged')
+        .replace('{n}', String(selectedIds.size))
+        .replace('{g}', tagGroupSel)
+        .replace('{v}', tagValueDraft.trim()))
+    } catch (e) {
+      setGvMsg(String(e).slice(0, 110))
+    } finally {
+      setBatchBusy(false)
+    }
+  }
+
+  /** Batch filter → select: pull every node matching the current filters
+   *  into the selection set (works with or without select mode). */
+  const selectFiltered = () => {
+    if (!graphData) return
+    const next = new Set(selectedIds)
+    for (const n of graphData.elements.nodes) {
+      const d = n.data
+      const typeOk = typeFilter === null || entityKeyOf(d.entity_type) === typeFilter
+      let tagOk = true
+      if (tagFilter) {
+        const [g, v] = tagFilter.split(':')
+        let tags: Array<{ g: string; v: string }> = []
+        try { tags = JSON.parse(d.tags || '[]') } catch { /* ignore */ }
+        tagOk = tags.some((tp) => tp.g === g && tp.v === v)
+      }
+      if (typeOk && tagOk) next.add(d.id)
+    }
+    setSelectedIds(next)
+    setSelectMode(true)
+  }
+
   const nodeCount = graphData?.elements.nodes.length || 0
   const edgeCount = graphData?.elements.edges.length || 0
 
@@ -345,8 +491,22 @@ export default function GraphView() {
     return (
       <div className="flex items-center justify-center h-full">
         <div className="text-center max-w-sm px-6 py-12 rounded-2xl bg-surface-card/50 border border-border-subtle">
-          <div className="w-10 h-10 mx-auto mb-3 rounded-full border-2 border-accent-purple border-t-transparent animate-spin" />
-          <p className="text-text-secondary text-sm">{t('app.loading')} <span className="text-text-primary font-medium">{selectedBook?.title}</span>...</p>
+          {graphLoading ? (
+            <>
+              <div className="w-10 h-10 mx-auto mb-3 rounded-full border-2 border-accent-purple border-t-transparent animate-spin" />
+              <p className="text-text-secondary text-sm">{t('app.loading')} <span className="text-text-primary font-medium">{selectedBook?.title}</span>...</p>
+            </>
+          ) : (
+            <>
+              <p className="text-text-secondary text-sm mb-3">{t('app.extractionFailed')}</p>
+              <button
+                onClick={() => setLoadSeq((n) => n + 1)}
+                className="px-4 py-2 text-xs font-medium bg-surface-hover hover:bg-surface-overlay text-text-secondary rounded-lg transition-colors"
+              >
+                {t('app.reload')}
+              </button>
+            </>
+          )}
         </div>
       </div>
     )
@@ -375,25 +535,159 @@ export default function GraphView() {
 
   return (
     <div className="relative w-full h-full">
-      {/* Stats + Sim Toggle */}
-      <div className="absolute top-3 left-3 z-10 bg-surface-card/90 backdrop-blur-sm rounded-lg px-3 py-1.5 border border-border-subtle flex items-center gap-3">
-        <span className="text-xs text-text-muted">
-          <span className="text-text-primary font-medium">{nodeCount}</span> nodes
-        </span>
-        <span className="w-px h-3 bg-border-subtle" />
-        <span className="text-xs text-text-muted">
-          <span className="text-text-primary font-medium">{edgeCount}</span> edges
-        </span>
-        <span className="w-px h-3 bg-border-subtle" />
-        <button
-          onClick={toggleSimulation}
-          className={`px-2 py-0.5 text-xs font-medium rounded transition ${
-            simRunning ? 'bg-accent-green/20 text-accent-green' : 'bg-amber-500/20 text-amber-400'
-          }`}
-          title={simRunning ? 'Pause force simulation' : 'Resume force simulation'}
-        >
-          {simRunning ? '● Live' : '▶ Paused'}
-        </button>
+      {/* Management controls — BOTTOM-LEFT: the a11y panel owns the top-left
+          corner and would cover these buttons (user report). flex-col-reverse
+          keeps the main bar hugging the bottom while dialogs stack upward. */}
+      <div className="absolute bottom-3 left-3 z-10 max-w-[min(640px,calc(100%-24px))] flex flex-col-reverse gap-1.5 items-start">
+        <div className="bg-surface-card/90 backdrop-blur-sm rounded-lg px-3 py-1.5 border border-border-subtle flex items-center gap-3 flex-wrap">
+          <span className="text-xs text-text-muted">
+            <span className="text-text-primary font-medium">{nodeCount}</span> nodes
+          </span>
+          <span className="w-px h-3 bg-border-subtle" />
+          <span className="text-xs text-text-muted">
+            <span className="text-text-primary font-medium">{edgeCount}</span> edges
+          </span>
+          <span className="w-px h-3 bg-border-subtle" />
+          <button
+            onClick={toggleSimulation}
+            className={`px-2 py-0.5 text-xs font-medium rounded transition ${
+              simRunning ? 'bg-accent-green/20 text-accent-green' : 'bg-amber-500/20 text-amber-400'
+            }`}
+            title={simRunning ? 'Pause force simulation' : 'Resume force simulation'}
+          >
+            {simRunning ? '● Live' : '▶ Paused'}
+          </button>
+          <span className="w-px h-3 bg-border-subtle" />
+          <button
+            onClick={() => setSelectMode((v) => !v)}
+            className={`px-2 py-0.5 text-xs font-medium rounded transition ${
+              selectMode ? 'bg-accent-purple/25 text-accent-purple' : 'bg-surface-hover text-text-muted hover:text-text-primary'
+            }`}
+            title={t('gm.selectModeTitle')}
+          >
+            {selectMode ? '☑ ' + t('gm.selectMode') : t('gm.selectMode')}
+          </button>
+          <select
+            value={tagFilter ?? ''}
+            onChange={(e) => setTagFilter(e.target.value || null)}
+            className="px-1.5 py-0.5 text-xs rounded bg-surface-hover text-text-muted border border-border-subtle max-w-[150px]"
+            aria-label={t('gm.tagFilter')}
+          >
+            <option value="">{t('gm.tagFilter')}</option>
+            {Object.entries(tagGroups).flatMap(([g, vals]) =>
+              vals.map((v) => <option key={`${g}:${v}`} value={`${g}:${v}`}>{g}:{v}</option>),
+            )}
+          </select>
+          {tagFilter && (
+            <button
+              onClick={selectFiltered}
+              className="px-2 py-0.5 text-xs font-medium rounded bg-surface-hover text-text-muted hover:text-text-primary"
+              title={t('gm.selectFilteredTitle')}
+            >
+              {t('gm.selectFiltered')}
+            </button>
+          )}
+          <span className="w-px h-3 bg-border-subtle" />
+          <button
+            onClick={() => setRecycleOpen((v) => !v)}
+            className={`px-2 py-0.5 text-xs font-medium rounded transition ${
+              recycleOpen ? 'bg-amber-500/20 text-amber-400' : 'bg-surface-hover text-text-muted hover:text-text-primary'
+            }`}
+          >
+            {t('gm.recycle')}
+          </button>
+        </div>
+
+        {/* Selection toolbar (select mode) */}
+        {selectMode && selectedIds.size > 0 && (
+          <div className="bg-surface-card/95 backdrop-blur-sm rounded-lg px-3 py-1.5 border border-accent-purple/50 flex items-center gap-2 flex-wrap">
+            <span className="text-xs font-medium text-accent-purple">
+              {t('gm.selected').replace('{n}', String(selectedIds.size))}
+            </span>
+            <button
+              onClick={() => setTagDialogOpen(true)}
+              className="px-2 py-0.5 text-xs font-medium rounded bg-surface-hover text-text-primary hover:bg-surface-overlay"
+            >
+              {t('gm.batchTag')}
+            </button>
+            <button
+              onClick={() => void batchDelete()}
+              disabled={batchBusy}
+              className="px-2 py-0.5 text-xs font-medium rounded bg-red-500/15 text-red-400 hover:bg-red-500/25 disabled:opacity-50"
+            >
+              {batchBusy ? '…' : t('gm.batchDelete')}
+            </button>
+            <button
+              onClick={() => setSelectedIds(new Set())}
+              className="px-2 py-0.5 text-xs rounded text-text-dim hover:text-text-primary"
+            >
+              {t('gm.clearSelection')}
+            </button>
+          </div>
+        )}
+
+        {/* Tag dialog (batch labelling) */}
+        {tagDialogOpen && (
+          <div className="bg-surface-card/95 backdrop-blur-sm rounded-lg px-3 py-2 border border-border-subtle flex items-center gap-2 flex-wrap">
+            <span className="text-xs text-text-muted">{t('gm.tagGroup')}</span>
+            <select
+              value={tagGroupSel}
+              onChange={(e) => setTagGroupSel(e.target.value)}
+              className="px-1.5 py-0.5 text-xs rounded bg-surface-hover text-text-primary border border-border-subtle"
+            >
+              {['学科', '章节', '自定义', ...Object.keys(tagGroups).filter((g) => !['学科', '章节', '自定义'].includes(g))]
+                .map((g) => <option key={g} value={g}>{g}</option>)}
+            </select>
+            {tagGroupSel === '自定义' && (
+              <input
+                value={tagValueDraft}
+                onChange={(e) => { setTagValueDraft(e.target.value); setTagGroupSel(e.target.value.split(':')[0] || '自定义') }}
+                placeholder={t('gm.customGroup')}
+                className="px-1.5 py-0.5 text-xs rounded bg-surface-hover text-text-primary border border-border-subtle w-24"
+              />
+            )}
+            <input
+              value={tagValueDraft}
+              onChange={(e) => setTagValueDraft(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') void applyBatchTags() }}
+              placeholder={t('gm.tagValue')}
+              className="px-1.5 py-0.5 text-xs rounded bg-surface-hover text-text-primary border border-border-subtle w-32"
+            />
+            <button
+              onClick={() => void applyBatchTags()}
+              disabled={batchBusy || !tagValueDraft.trim()}
+              className="px-2 py-0.5 text-xs font-medium rounded bg-accent-purple/25 text-accent-purple disabled:opacity-50"
+            >
+              {t('gm.applyTag')}
+            </button>
+            <button
+              onClick={() => { setTagDialogOpen(false); setTagValueDraft('') }}
+              className="px-2 py-0.5 text-xs rounded text-text-dim hover:text-text-primary"
+            >
+              {t('gm.cancel')}
+            </button>
+          </div>
+        )}
+
+        {/* Action feedback + undo */}
+        {(gvMsg || gvUndo) && (
+          <div className="bg-surface-card/95 backdrop-blur-sm rounded-lg px-3 py-1.5 border border-border-subtle flex items-center gap-2">
+            <span className="text-xs text-text-muted truncate max-w-[300px]">{gvMsg}</span>
+            {gvUndo && (
+              <button
+                onClick={() => void undoBatchDelete()}
+                className="px-2 py-0.5 text-xs font-medium rounded bg-accent-purple/25 text-accent-purple"
+              >
+                {t('gm.undoDelete')}
+              </button>
+            )}
+            <button
+              onClick={() => { setGvMsg(''); setGvUndo(null) }}
+              className="text-text-dim hover:text-text-primary text-xs"
+              aria-label={t('gm.dismiss')}
+            >✕</button>
+          </div>
+        )}
       </div>
 
       {/* Hint */}
@@ -402,6 +696,14 @@ export default function GraphView() {
           {t('graph.dragHint')}
         </span>
       </div>
+
+      {/* Recycle bin (bottom-right, per user preference) */}
+      <RecyclePanel
+        bookId={selectedBookId || ''}
+        open={recycleOpen}
+        onClose={() => setRecycleOpen(false)}
+        onChanged={refreshGraph}
+      />
 
       {/* Search bar */}
       <div className="absolute top-3 right-3 z-20">

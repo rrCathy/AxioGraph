@@ -1,5 +1,7 @@
 const BASE = '/api'
 
+import type { AiReadResult, AiReviewQueue, AskSectionResult, PromoteResult, QaRecord, RecycleBin, RecycleNode, RelationInput, RelationTarget, SuggestedRelation, TagPair } from '../types'
+
 export async function uploadBook(file: File) {
   const fd = new FormData()
   fd.append('file', file)
@@ -274,4 +276,194 @@ export async function getAutoStatus(bookId: string, taskId: string) {
   const res = await fetch(`${BASE}/books/${bookId}/auto-extract/${taskId}`)
   if (!res.ok) return null
   return res.json()
+}
+
+/* ── Promote / relations / selection Q&A ────────────────────────────── */
+
+export async function promoteNode(bookId: string, body: {
+  entity_type: string; name: string; content: string
+  quote?: string | null; page_start?: number | null; page_end?: number | null
+  relations?: RelationInput[]
+}): Promise<PromoteResult> {
+  const res = await fetch(`${BASE}/books/${bookId}/nodes/promote`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`)
+  return res.json()
+}
+
+export async function undoPromote(token: string) {
+  const res = await fetch(`${BASE}/promote/${token}/undo`, { method: 'POST' })
+  return res.ok
+}
+
+export async function listRelationTargets(bookId: string, exclude?: string): Promise<RelationTarget[]> {
+  const q = exclude ? `?exclude=${encodeURIComponent(exclude)}` : ''
+  const res = await fetch(`${BASE}/books/${bookId}/relation-targets${q}`)
+  if (!res.ok) return []
+  const r = await res.json()
+  return r.nodes || []
+}
+
+export async function suggestRelations(bookId: string, body: {
+  name: string; entity_type: string; content: string; limit?: number
+}): Promise<{ relations: SuggestedRelation[]; degraded?: boolean }> {
+  const res = await fetch(`${BASE}/books/${bookId}/relations/suggest`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) return { relations: [] }
+  return res.json()
+}
+
+export async function createEdge(body: {
+  book_id: string; source_id: string; target_id: string
+  relation_type: string; description?: string
+}) {
+  const res = await fetch(`${BASE}/graph/edges`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`)
+  return res.json()
+}
+
+export async function deleteEdge(edgeId: number) {
+  const res = await fetch(`${BASE}/graph/edges/${edgeId}`, { method: 'DELETE' })
+  return res.ok
+}
+
+export async function askSection(bookId: string, body: {
+  question: string; selection?: string; page_no: number
+}): Promise<AskSectionResult> {
+  const res = await fetch(`${BASE}/books/${bookId}/ask-section`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`)
+  return res.json()
+}
+
+export async function listPageQa(bookId: string, pageNo: number): Promise<QaRecord[]> {
+  const res = await fetch(`${BASE}/books/${bookId}/pages/${pageNo}/qa`)
+  if (!res.ok) return []
+  const r = await res.json()
+  return r.records || []
+}
+
+export async function deleteQa(qaId: string) {
+  const res = await fetch(`${BASE}/qa/${qaId}`, { method: 'DELETE' })
+  return res.ok
+}
+
+/* ── AI auto-flow: read page → review ───────────────────────────────── */
+
+export async function aiReadPage(bookId: string, pageNo: number): Promise<AiReadResult> {
+  const res = await fetch(`${BASE}/books/${bookId}/ai-read`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ page_no: pageNo }),
+  })
+  if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`)
+  return res.json()
+}
+
+export async function getAiReviewQueue(bookId: string): Promise<AiReviewQueue> {
+  const res = await fetch(`${BASE}/books/${bookId}/ai-review`)
+  if (!res.ok) return { nodes: [], edges: [] }
+  return res.json()
+}
+
+export async function aiReviewNode(nodeId: string, body: {
+  accept: boolean; note?: string; edits?: { name?: string; content?: string; entity_type?: string }
+}) {
+  const res = await fetch(`${BASE}/ai/nodes/${nodeId}/review`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`)
+  return res.json()
+}
+
+export async function aiReviewEdge(edgeId: number, body: { accept: boolean; note?: string }) {
+  const res = await fetch(`${BASE}/ai/edges/${edgeId}/review`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`)
+  return res.json()
+}
+
+/* ── Graph management: tags + recycle bin ───────────────────────────── */
+
+export async function batchDeleteNodes(bookId: string, ids: string[]) {
+  const res = await fetch(`${BASE}/graph/nodes/batch-delete`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ book_id: bookId, ids }),
+  })
+  if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`)
+  return res.json()
+}
+
+export async function batchAddTags(bookId: string, ids: string[], add: TagPair[]) {
+  const res = await fetch(`${BASE}/graph/nodes/batch-tags`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ book_id: bookId, ids, add }),
+  })
+  if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`)
+  return res.json()
+}
+
+export async function setNodeTags(nodeId: string, tags: TagPair[]) {
+  const res = await fetch(`${BASE}/graph/nodes/${nodeId}/tags`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ tags }),
+  })
+  if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`)
+  return res.json()
+}
+
+export async function getTagList(bookId: string): Promise<Record<string, string[]>> {
+  const res = await fetch(`${BASE}/books/${bookId}/tag-list`)
+  if (!res.ok) return {}
+  return (await res.json()).groups || {}
+}
+
+export async function getRecycleBin(bookId: string): Promise<RecycleBin> {
+  const res = await fetch(`${BASE}/books/${bookId}/recycle`)
+  if (!res.ok) return { nodes: [], edges: [] }
+  return res.json()
+}
+
+export async function recycleRestore(nodeIds: string[]) {
+  const res = await fetch(`${BASE}/recycle/restore`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ node_ids: nodeIds }),
+  })
+  return res.ok
+}
+
+export async function recyclePurge(nodeIds: string[]) {
+  const res = await fetch(`${BASE}/recycle/purge`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ node_ids: nodeIds }),
+  })
+  return res.ok
+}
+
+export async function recyclePurgeAll(bookId: string) {
+  const res = await fetch(`${BASE}/books/${bookId}/recycle/purge-all`, { method: 'POST' })
+  return res.ok
 }

@@ -749,13 +749,13 @@ def confirm_structure(book_id: str) -> dict:
     conn = get_db()
     conn.execute(
         """DELETE FROM graph_edges WHERE source_id IN
-             (SELECT id FROM graph_nodes WHERE book_id = ? AND entity_type = 'CHAPTER')
+             (SELECT id FROM graph_nodes WHERE book_id = ? AND entity_type = 'CHAPTER' AND deleted = 0)
             OR target_id IN
-             (SELECT id FROM graph_nodes WHERE book_id = ? AND entity_type = 'CHAPTER')""",
+             (SELECT id FROM graph_nodes WHERE book_id = ? AND entity_type = 'CHAPTER' AND deleted = 0)""",
         (book_id, book_id),
     )
     conn.execute(
-        "DELETE FROM graph_nodes WHERE book_id = ? AND entity_type = 'CHAPTER'",
+        "DELETE FROM graph_nodes WHERE book_id = ? AND entity_type = 'CHAPTER' AND deleted = 0",
         (book_id,),
     )
     created = 0

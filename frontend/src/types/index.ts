@@ -28,6 +28,8 @@ export interface GraphNode {
     content: string
     chapter: string
     color: string
+    review_status?: string
+    tags?: string
   }
 }
 
@@ -39,6 +41,7 @@ export interface GraphEdge {
     label: string
     relation_type: string
     description: string
+    review_status?: string
   }
 }
 
@@ -217,6 +220,126 @@ export interface AutoFailWindow {
   start: number
   end: number
   error?: string
+}
+
+/* ── Promote / relations / selection Q&A ───────────────────────────────── */
+
+export interface RelationInput {
+  target_id: string
+  relation_type: string
+  description: string
+}
+
+export interface PromoteResult {
+  ok: boolean
+  action: 'created' | 'merged'
+  node_id: string
+  edges_added: number
+  undo_token: string
+}
+
+export interface RelationTarget {
+  id: string
+  name: string
+  entity_type: string
+  page_start: number | null
+  page_end: number | null
+}
+
+export interface SuggestedRelation {
+  target_id: string
+  target_name: string
+  relation_type: string
+  note: string
+}
+
+export interface QaRecord {
+  id: string
+  question: string
+  selection: string | null
+  answer: string | null
+  section_title: string | null
+  context_pages: string | null
+  created_at: string
+}
+
+export interface AskSectionResult {
+  id: string
+  answer: string
+  section: {
+    title: string
+    source: 'toc' | 'layout' | 'neighbours'
+    start: number
+    end: number
+    chars: number
+    pages_used: number[]
+  }
+}
+
+/* ── AI auto-flow review ─────────────────────────────────────────────── */
+
+export interface AiReviewNode {
+  id: string
+  entity_type: string
+  name: string
+  content: string
+  source_quote: string | null
+  page_start: number | null
+  page_end: number | null
+  ai_attempts: number
+}
+
+export interface AiReviewEdge {
+  id: number
+  source_id: string
+  target_id: string
+  relation_type: string
+  description: string | null
+  ai_attempts: number
+  source_name: string
+  target_name: string
+}
+
+export interface AiReviewQueue {
+  nodes: AiReviewNode[]
+  edges: AiReviewEdge[]
+}
+
+export interface AiReadResult {
+  items: number
+  edges?: number
+  page?: number
+  reason?: string
+}
+
+/* ── Graph management: tags + recycle bin ────────────────────────────── */
+
+export interface TagPair {
+  g: string
+  v: string
+}
+
+export interface RecycleNode {
+  id: string
+  entity_type: string
+  name: string
+  page_start: number | null
+  page_end: number | null
+  review_status: string
+  created_by: string
+  deleted_at: string | null
+}
+
+export interface RecycleBin {
+  nodes: RecycleNode[]
+  edges: {
+    id: number
+    relation_type: string
+    description: string | null
+    deleted_at: string | null
+    source_name: string
+    target_name: string
+  }[]
 }
 
 export interface AutoStatus {

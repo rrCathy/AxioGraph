@@ -157,15 +157,17 @@ export function LayoutBar({
  * Detected theorem-like environments on the current page. Each row is a real
  * detection (kind + number/title + the raw first line + whether it came from a
  * bold font or text/geometry), so the user can judge precision at a glance and
- * click a row to highlight its box on the original page.
+ * click a row to highlight its box on the original page. The action on the
+ * right edits and promotes the environment into the graph.
  */
 export function EnvironmentList({
-  environments, activeIndex, onPick, onClose,
+  environments, activeIndex, onPick, onClose, onPromote,
 }: {
   environments: Environment[]
   activeIndex: number | null
   onPick: (i: number) => void
   onClose: () => void
+  onPromote?: (i: number) => void
 }) {
   const { t, lang } = useI18n()
   const counts = ENV_ORDER
@@ -192,32 +194,45 @@ export function EnvironmentList({
         {environments.length === 0 ? (
           <div className="px-3 py-3 text-caption text-ag-ink3">{t('workbench.envNone')}</div>
         ) : environments.map((e, i) => (
-          <button
+          <div
             key={i}
-            onClick={() => onPick(i)}
-            className={`ag-focus-ring w-full text-left px-3 py-1.5 flex items-start gap-2 border-b border-ag-line1 last:border-b-0 transition-colors ${
+            className={`flex items-start gap-2 border-b border-ag-line1 last:border-b-0 transition-colors ${
               activeIndex === i ? 'bg-ag-quoteBg' : 'hover:bg-ag-bg2'}`}
           >
-            <span
-              className="shrink-0 mt-0.5 px-1.5 py-0.5 text-micro rounded-badge border ag-mono"
-              style={{ color: envColor(e.kind), borderColor: envColor(e.kind) }}
+            <button
+              onClick={() => onPick(i)}
+              className="ag-focus-ring flex-1 min-w-0 text-left px-3 py-1.5 flex items-start gap-2"
             >
-              {envLabel(e.kind, lang)}{e.number ? ` ${e.number}` : ''}
-            </span>
-            <span className="flex-1 min-w-0">
-              <span className="block text-caption text-ag-ink1 truncate">
-                {e.continuation && (
-                  <span className="text-micro text-ag-statusOcr mr-1">↳承上页</span>
-                )}
-                {e.title ? `${t('workbench.envTitle')} ${e.title} · ` : ''}
-                {e.text.split('\n')[0].slice(0, 80)}
+              <span
+                className="shrink-0 mt-0.5 px-1.5 py-0.5 text-micro rounded-badge border ag-mono"
+                style={{ color: envColor(e.kind), borderColor: envColor(e.kind) }}
+              >
+                {envLabel(e.kind, lang)}{e.number ? ` ${e.number}` : ''}
               </span>
-              <span className="block text-micro text-ag-ink3 ag-mono">
-                {e.signal === 'font' ? t('workbench.envSignalFont') : t('workbench.envSignalText')}
-                {' · y'}{e.bbox[1].toFixed(0)}–{e.bbox[3].toFixed(0)}
+              <span className="flex-1 min-w-0">
+                <span className="block text-caption text-ag-ink1 truncate">
+                  {e.continuation && (
+                    <span className="text-micro text-ag-statusOcr mr-1">↳承上页</span>
+                  )}
+                  {e.title ? `${t('workbench.envTitle')} ${e.title} · ` : ''}
+                  {e.text.split('\n')[0].slice(0, 80)}
+                </span>
+                <span className="block text-micro text-ag-ink3 ag-mono">
+                  {e.signal === 'font' ? t('workbench.envSignalFont') : t('workbench.envSignalText')}
+                  {' · y'}{e.bbox[1].toFixed(0)}–{e.bbox[3].toFixed(0)}
+                </span>
               </span>
-            </span>
-          </button>
+            </button>
+            {onPromote && (
+              <button
+                onClick={() => onPromote(i)}
+                className="ag-focus-ring shrink-0 self-center mr-2 px-2 py-0.5 text-micro rounded-btn border border-ag-cinnabar text-ag-cinnabar hover:bg-ag-quoteBg"
+                aria-label={`${t('promote.title')}：${envLabel(e.kind, lang)}${e.number ?? ''}`}
+              >
+                {t('promote.submit')}
+              </button>
+            )}
+          </div>
         ))}
       </div>
     </div>

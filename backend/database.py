@@ -115,8 +115,33 @@ def init_db():
             FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE
         );
 
+        CREATE TABLE IF NOT EXISTS qa_records (
+            id TEXT PRIMARY KEY,
+            book_id TEXT NOT NULL,
+            page_no INTEGER NOT NULL,
+            question TEXT,
+            selection TEXT,
+            answer TEXT,
+            section_title TEXT,
+            context_pages TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS ai_jobs (
+            id TEXT PRIMARY KEY,
+            book_id TEXT NOT NULL,
+            page_no INTEGER NOT NULL,
+            status TEXT DEFAULT 'done',
+            items_created INTEGER DEFAULT 0,
+            error TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE
+        );
+
         CREATE INDEX IF NOT EXISTS idx_pages_book ON pages(book_id);
         CREATE INDEX IF NOT EXISTS idx_candidates_book ON candidates(book_id, status);
+        CREATE INDEX IF NOT EXISTS idx_qa_page ON qa_records(book_id, page_no);
     """)
     # Migrate existing databases
     for col, col_type in [
@@ -162,6 +187,30 @@ def init_db():
         conn.execute("ALTER TABLE graph_nodes ADD COLUMN updated_at TIMESTAMP")
     except sqlite3.OperationalError:
         pass
+
+    # AI auto-flow: consecutive rework attempts per item (drop after 3).
+    for table in ("graph_nodes", "graph_edges"):
+        try:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN ai_attempts INTEGER DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
+
+    # Graph management: node tags (grouped labels as JSON) + soft delete
+    # (recycle bin). Edges carry the delete flags so cascading a node
+    # deletion can hide its edges and a restore can bring them back.
+    try:
+        conn.execute("ALTER TABLE graph_nodes ADD COLUMN tags TEXT DEFAULT '[]'")
+    except sqlite3.OperationalError:
+        pass
+    for table in ("graph_nodes", "graph_edges"):
+        try:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN deleted INTEGER DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN deleted_at TIMESTAMP")
+        except sqlite3.OperationalError:
+            pass
 
     conn.commit()
     conn.close()

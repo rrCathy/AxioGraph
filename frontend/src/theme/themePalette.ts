@@ -110,10 +110,29 @@ export function buildCyStyle(p: CyPalette): any[] {
     { selector: 'edge[relation_type="PROVES"]', style: { 'line-style': 'dotted', width: 2 } },
     { selector: 'edge[relation_type="BUILDS_ON"]', style: { 'line-style': 'dashed' } },
     { selector: 'edge[relation_type="EXAMPLE_OF"]', style: { 'line-style': 'dotted' } },
+    // AI auto-flow items awaiting review: amber dashed outline so the
+    // "AI 部分图" is instantly separable from human-confirmed knowledge.
+    {
+      selector: 'node[review_status="ai_pending"]',
+      style: { 'border-style': 'dashed', 'border-color': p.cinnabar, 'border-width': 2 },
+    },
+    {
+      selector: 'edge[review_status="ai_pending"]',
+      style: { 'line-style': 'dashed', 'line-color': p.cinnabar, 'target-arrow-color': p.cinnabar },
+    },
     { selector: ':selected', style: { 'border-color': p.cinnabar, 'border-width': 3 } },
     { selector: 'edge:selected', style: { 'line-color': p.cinnabar, 'target-arrow-color': p.cinnabar, width: 2 } },
     { selector: 'node.dimmed', style: { opacity: 0.28 } },
     { selector: 'edge.dimmed', style: { opacity: 0.28 } },
     { selector: 'node.lod-low', style: { shape: 'ellipse', label: '' } },
+    // batch-selection highlight (gold ring)
+    {
+      selector: 'node.ag-selected',
+      style: {
+        'border-color': '#E6B800',
+        'border-width': 3.5,
+        'background-color': '#F5E6A8',
+      },
+    },
   ]
 }

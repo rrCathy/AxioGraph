@@ -15,8 +15,12 @@ import {
 } from './workbench/WorkbenchPanels'
 import StructurePanel from './workbench/StructurePanel'
 import TocList from './workbench/TocList'
+import PromoteDialog from './workbench/PromoteDialog'
+import type { PromoteInit } from './workbench/PromoteDialog'
+import AskDialog from './workbench/AskDialog'
+import AiReviewPanel from './workbench/AiReviewPanel'
 
-type RightTab = 'text' | 'candidates'
+type RightTab = 'text' | 'candidates' | 'ai'
 type LeftTab = 'nav' | 'toc' | 'structure'
 
 interface UndoState { label: string; run: () => void }
@@ -60,6 +64,10 @@ export default function Workbench() {
   const [structuredText, setStructuredText] = useState(true)
   const [envPanelOpen, setEnvPanelOpen] = useState(false)
   const [activeEnvIndex, setActiveEnvIndex] = useState<number | null>(null)
+  const [promoteInit, setPromoteInit] = useState<(PromoteInit & { sourceLabel: string }) | null>(null)
+  const [askSelection, setAskSelection] = useState<string | null>(null)
+  const [aiRefreshKey, setAiRefreshKey] = useState(0)
+  const [aiBusy, setAiBusy] = useState(false)
 
   const { state: task, start, setPhase, stop, elapsedLabel } = useLongTask(75)
   const abortRef = useRef<AbortController | null>(null)
@@ -416,6 +424,109 @@ export default function Workbench() {
     setStatus(t('workbench.saved'))
   }
 
+  // ── Promote / ask (selection in text, or environment row) ────────────
+
+  const envKindToEntityType = (kind: string) => {
+    const map: Record<string, string> = {
+      axiom: 'AXIOM', theorem: 'THEOREM', lemma: 'LEMMA',
+      proposition: 'PROPOSITION', corollary: 'COROLLARY',
+      definition: 'DEFINITION', example: 'EXAMPLE', remark: 'REMARK',
+      conjecture: 'CONJECTURE', claim: 'CLAIM', fact: 'FACT',
+      assumption: 'ASSUMPTION', principle: 'PRINCIPLE',
+      notation: 'NOTATION', convention: 'CONCEPT',
+      problem: 'CONCEPT', warning: 'CONCEPT', exercise: 'CONCEPT',
+      proof: 'PROOF',
+    }
+    return map[kind] ?? 'CONCEPT'
+  }
+
+  const promoteSelection = (text: string) => {
+    const firstLine = text.split('\n')[0].trim()
+    setPromoteInit({
+      entityType: 'DEFINITION',
+      name: firstLine.slice(0, 40) || t('promote.title'),
+      content: text,
+      quote: text.slice(0, 300),
+      pageStart: pageNo,
+      pageEnd: pageNo,
+      sourceLabel: `p${pageNo} 划选 · ${text.length} 字`,
+    })
+  }
+
+  const promoteEnvironment = (i: number) => {
+    const env = page?.environments?.[i]
+    if (!env) return
+    const kindLabel = env.label || env.kind
+    const name = [kindLabel, env.number].filter(Boolean).join(' ')
+      + (env.title ? ` ${env.title}` : '')
+    setPromoteInit({
+      entityType: envKindToEntityType(env.kind),
+      name: name.trim().slice(0, 60) || kindLabel,
+      content: env.text,
+      quote: env.text.split('\n')[0].slice(0, 300),
+      pageStart: pageNo,
+      pageEnd: pageNo,
+      sourceLabel: `p${pageNo} 环境 · ${kindLabel}${env.number ? ' ' + env.number : ''}`,
+    })
+    setActiveEnvIndex(i)
+    setEnvPanelOpen(true)
+  }
+
+  const onPromoteDone = async (r: { node_id: string; action: string; undo_token: string; name: string }) => {
+    setPromoteInit(null)
+    await loadNodes()
+    const label = `${r.action === 'merged' ? '已合并到既有节点' : '已入图'}「${r.name}」`
+    setMsg(label)
+    setStatus(label)
+    // Promote actions undo through their own endpoint, not the candidate one.
+    setUndo({
+      label,
+      run: async () => {
+        const ok = await api.undoPromote(r.undo_token).catch(() => false)
+        if (!ok) { setAlert(t('workbench.undoFailed')); return }
+        await loadNodes()
+        setUndo(null)
+      },
+    })
+  }
+
+  // ── AI auto-flow: manual "已读" trigger per page ─────────────────────
+
+  const markPageRead = async () => {
+    if (!bookId || aiBusy) return
+    setAiBusy(true)
+    start('extract', t('ai.reading').replace('{n}', String(pageNo)))
+    try {
+      const r = await api.aiReadPage(bookId, pageNo)
+      setAiRefreshKey((k) => k + 1)
+      setTab('ai')
+      if (r.reason) {
+        setMsg(r.reason)
+        setStatus(r.reason)
+      } else if ((r.items ?? 0) === 0) {
+        const label = t('ai.readEmpty')
+        setMsg(label)
+        setStatus(label)
+      } else {
+        const label = t('ai.readDone')
+          .replace('{n}', String(r.items ?? 0))
+          .replace('{m}', String(r.edges ?? 0))
+        setMsg(label)
+        setStatus(label)
+      }
+    } catch (e) {
+      // 502 here is almost always the local model server (down / 429).
+      const raw = String((e as Error).message || e)
+      const label = `${t('ai.readFailed')} · ${raw.slice(0, 90)}`
+      setMsg(label)
+      setStatus(label)
+      setAlert(t('ai.readFailed'))
+    } finally {
+      setAiBusy(false)
+      stop()
+    }
+  }
+
   const doRelayout = async () => {
     if (!bookId) return
     try {
@@ -700,6 +811,14 @@ export default function Workbench() {
                     >
                       {t('workbench.analyze')}
                     </Button>
+                    <Button
+                      className="w-full"
+                      disabled={!bookId || !total || task.active || aiBusy}
+                      loading={aiBusy}
+                      onClick={() => void markPageRead()}
+                    >
+                      {t('ai.readBtn')}
+                    </Button>
                     <div className="grid grid-cols-2 gap-1.5">
                       <Button size="sm" disabled={!bookId || !total || task.active} onClick={() => void runVisionOcr()}>
                         {t('workbench.visionOcr')}
@@ -867,7 +986,7 @@ export default function Workbench() {
           <div className={`${narrow ? 'w-full' : 'w-[460px] shrink-0'} flex flex-col min-w-0 bg-ag-bg2`} ref={editorFocusRef}>
             <QuoteStrip quote={quoteDraft} onClear={() => setQuoteDraft('')} />
             <div className="shrink-0 flex border-b border-ag-line1 bg-ag-bg1">
-              {([['text', t('workbench.textTab')], ['candidates', `${t('workbench.candidates')} (${visibleCandidates.length})`]] as const).map(([k, label]) => (
+              {([['text', t('workbench.textTab')], ['candidates', `${t('workbench.candidates')} (${visibleCandidates.length})`], ['ai', t('ai.tab')]] as const).map(([k, label]) => (
                 <button
                   key={k}
                   onClick={() => setTab(k)}
@@ -903,6 +1022,7 @@ export default function Workbench() {
                         activeIndex={activeEnvIndex}
                         onPick={setActiveEnvIndex}
                         onClose={() => { setEnvPanelOpen(false); setActiveEnvIndex(null) }}
+                        onPromote={promoteEnvironment}
                       />
                     )}
                     <div className="flex-1 min-h-0">
@@ -910,6 +1030,8 @@ export default function Workbench() {
                         text={structuredText ? (page.layout_text || page.text) : page.text}
                         onSave={(text) => void saveText(text)}
                         onQuote={setQuoteDraft}
+                        onPromote={promoteSelection}
+                        onAsk={setAskSelection}
                         onDirtyChange={setDirty}
                         saving={false}
                       />
@@ -929,6 +1051,12 @@ export default function Workbench() {
                   <div className="p-6"><EmptyState>{t('workbench.noPageText')}</EmptyState></div>
                 )}
               </div>
+            ) : tab === 'ai' ? (
+              <AiReviewPanel
+                bookId={bookId ?? ''}
+                refreshKey={aiRefreshKey}
+                onChanged={() => { void loadNodes() }}
+              />
             ) : candidatePanel}
             <ConfirmedSummary
               nodes={nodes}
@@ -940,6 +1068,26 @@ export default function Workbench() {
       </div>
 
       {undo && <UndoToast label={undo.label} onUndo={() => void undo.run()} />}
+
+      {promoteInit && bookId && (
+        <PromoteDialog
+          open
+          bookId={bookId}
+          init={promoteInit}
+          sourceLabel={promoteInit.sourceLabel}
+          onClose={() => setPromoteInit(null)}
+          onDone={(r) => void onPromoteDone(r)}
+        />
+      )}
+      {askSelection !== null && bookId && (
+        <AskDialog
+          open
+          bookId={bookId}
+          pageNo={pageNo}
+          selection={askSelection}
+          onClose={() => setAskSelection(null)}
+        />
+      )}
 
       <ConfirmDialog
         open={confirmReimport}

@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from database import init_db
-from routers import books, graph, chat, pages, workbench, structure
+from routers import books, graph, chat, pages, workbench, structure, enrich
 
 app = FastAPI(title="AxioGraph", version="0.1.0")
 
@@ -19,6 +19,7 @@ app.include_router(chat.router)
 app.include_router(pages.router)
 app.include_router(workbench.router)
 app.include_router(structure.router)
+app.include_router(enrich.router)
 
 
 @app.on_event("startup")

@@ -177,6 +177,34 @@ def _page_lines(page: fitz.Page) -> list[dict]:
     # vertically and sit next to each other horizontally.
     merged: list[dict] = []
     for ln in lines:
+        # Proof-mark label rows: PyMuPDF splits one printed line into a bare
+        # '证明' row (bold, flush left) and its first-sentence body row (Fang,
+        # indented ~2em). The body row's y0 is a hair LOWER... actually higher
+        # in the sort key varies, so after (y0, x0) sorting the body row can
+        # precede the label row. Merge a bare label row back into the
+        # vertically-overlapping row emitted just before it -- without this,
+        # the label is stranded and the proof's first sentence gets swallowed
+        # by the previous environment (代数学方法 p107).
+        if ln["text"] in ("证明", "证") and merged:
+            hit = None
+            for j in range(len(merged) - 1, max(-1, len(merged) - 4), -1):
+                p = merged[j]
+                pb, cb = p["bbox"], ln["bbox"]
+                y_ov = min(pb[3], cb[3]) - max(pb[1], cb[1])
+                if y_ov > 0.5 * min(pb[3] - pb[1], cb[3] - cb[1]):
+                    hit = p
+                    break
+            if hit is not None:
+                a, b = (hit, ln) if hit["x0"] <= ln["x0"] else (ln, hit)
+                hit["text"] = (a["text"] + " " + b["text"]).strip()
+                hit["fonts"] |= ln["fonts"]
+                hit["bold_spans"] += ln["bold_spans"]
+                hit["size"] = max(hit["size"], ln["size"])
+                hb, cb2 = hit["bbox"], ln["bbox"]
+                hit["bbox"] = [min(hb[0], cb2[0]), min(hb[1], cb2[1]),
+                               max(hb[2], cb2[2]), max(hb[3], cb2[3])]
+                hit["x0"] = hit["bbox"][0]
+                continue  # label consumed; never a standalone row
         if merged:
             p = merged[-1]
             pb, cb = p["bbox"], ln["bbox"]

@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
-import { getNodeDetail, updateNode, deleteNode, getGraph, translateText } from '../services/api'
+import { getNodeDetail, updateNode, deleteNode, getGraph, translateText, setNodeTags, getTagList } from '../services/api'
 import { useAppStore } from '../stores/appStore'
-import type { NodeDetail as INodeDetail } from '../types'
+import type { NodeDetail as INodeDetail, TagPair } from '../types'
 import MathContent from './MathContent'
 import { useI18n } from '../i18n/useI18n'
 import Button from './ui/Button'
@@ -49,6 +49,11 @@ export default function NodeDetail({ nodeId }: { nodeId: string }) {
   const [translatedText, setTranslatedText] = useState<string | null>(null)
   const [showOriginal, setShowOriginal] = useState(true)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [tags, setTags] = useState<TagPair[]>([])
+  const [tagGroups, setTagGroups] = useState<Record<string, string[]>>({})
+  const [tagGroup, setTagGroup] = useState('学科')
+  const [tagValue, setTagValue] = useState('')
+  const [tagSaving, setTagSaving] = useState(false)
   const { selectNode, setGraphData, selectedBookId, lang } = useAppStore()
   const { t } = useI18n()
 
@@ -66,6 +71,7 @@ export default function NodeDetail({ nodeId }: { nodeId: string }) {
         setNode(data)
         setName(data.name || '')
         setContent(data.content || '')
+        try { setTags(JSON.parse((data as any).tags || '[]')) } catch { setTags([]) }
         setTranslatedText(null)
         setShowOriginal(true)
       })
@@ -73,6 +79,23 @@ export default function NodeDetail({ nodeId }: { nodeId: string }) {
         setError(`${t('node.loading')}：${err.message}`)
       })
   }, [nodeId])
+
+  useEffect(() => {
+    if (!selectedBookId) return
+    getTagList(selectedBookId).then(setTagGroups).catch(() => {})
+  }, [selectedBookId, nodeId])
+
+  const saveTags = async (next: TagPair[]) => {
+    setTags(next)
+    setTagSaving(true)
+    await setNodeTags(nodeId, next)
+    if (selectedBookId) {
+      const data = await getGraph(selectedBookId)
+      setGraphData(data)
+      getTagList(selectedBookId).then(setTagGroups).catch(() => {})
+    }
+    setTagSaving(false)
+  }
 
   const structured = useMemo(() => parseContent(content), [content])
 
@@ -151,6 +174,64 @@ export default function NodeDetail({ nodeId }: { nodeId: string }) {
           {node.chapter && (
             <p className="ag-mono text-caption text-ag-ink3 mb-4">{t('node.chapter')}{node.chapter}</p>
           )}
+
+          {/* Node tags (grouped labels) */}
+          <div className="mb-4">
+            <p className="text-caption text-ag-ink3 mb-1.5">{t('node.tags')}</p>
+            <div className="flex flex-wrap gap-1.5 mb-1.5">
+              {tags.length === 0 && (
+                <span className="text-micro text-ag-ink3">{t('node.noTags')}</span>
+              )}
+              {tags.map((tp, i) => (
+                <span
+                  key={`${tp.g}:${tp.v}:${i}`}
+                  className="inline-flex items-center gap-1 px-1.5 py-0.5 text-micro rounded-badge border border-ag-line2 bg-ag-bg2 text-ag-ink2"
+                >
+                  <span className="ag-mono text-ag-ink3">{tp.g}:</span>{tp.v}
+                  <button
+                    onClick={() => void saveTags(tags.filter((_, j) => j !== i))}
+                    disabled={tagSaving}
+                    className="ag-focus-ring text-ag-ink3 hover:text-ag-ink1"
+                    aria-label={t('node.removeTag')}
+                  >✕</button>
+                </span>
+              ))}
+            </div>
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <select
+                value={tagGroup}
+                onChange={(e) => setTagGroup(e.target.value)}
+                className="ag-focus-ring text-micro bg-ag-bg2 border border-ag-line2 rounded-btn px-1.5 py-0.5 text-ag-ink2"
+                aria-label={t('node.tagGroup')}
+              >
+                {['学科', '章节', '自定义', ...Object.keys(tagGroups).filter((g) => !['学科', '章节', '自定义'].includes(g))]
+                  .map((g) => <option key={g} value={g}>{g}</option>)}
+              </select>
+              <input
+                value={tagValue}
+                onChange={(e) => setTagValue(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && tagValue.trim()) {
+                    void saveTags([...tags, { g: tagGroup, v: tagValue.trim() }])
+                    setTagValue('')
+                  }
+                }}
+                placeholder={tagGroup === '自定义' ? t('node.customGroupHint') : t('node.tagValueHint')}
+                className="ag-focus-ring text-micro bg-ag-bg2 border border-ag-line2 rounded-btn px-1.5 py-0.5 text-ag-ink2 w-28"
+              />
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={tagSaving || !tagValue.trim()}
+                onClick={() => {
+                  void saveTags([...tags, { g: tagGroup, v: tagValue.trim() }])
+                  setTagValue('')
+                }}
+              >
+                {t('node.addTag')}
+              </Button>
+            </div>
+          </div>
 
           {structured ? (
             <div className="flex flex-col gap-3">

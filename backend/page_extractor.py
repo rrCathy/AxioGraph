@@ -386,7 +386,7 @@ def _match_target(conn, book_id: str, target: str) -> str | None:
     names = {
         r["name"]: r["id"]
         for r in conn.execute(
-            "SELECT id, name FROM graph_nodes WHERE book_id = ? AND review_status = 'confirmed'",
+            "SELECT id, name FROM graph_nodes WHERE book_id = ? AND review_status = 'confirmed' AND deleted = 0",
             (book_id,),
         )
     }
@@ -422,7 +422,7 @@ def _add_relations(conn, book_id: str, node_id: str, relations_json: str) -> tup
             continue
         exists = conn.execute(
             """SELECT id FROM graph_edges WHERE source_id = ? AND target_id = ?
-               AND relation_type = ? AND book_id = ?""",
+               AND relation_type = ? AND book_id = ? AND deleted = 0""",
             (node_id, target_id, rel["type"], book_id),
         ).fetchone()
         if exists:
@@ -469,7 +469,7 @@ def confirm_candidate(candidate_id: str, name_override: str | None = None,
     existing = conn.execute(
         """SELECT id, content, page_end FROM graph_nodes
            WHERE book_id = ? AND name = ? AND entity_type = ?
-             AND review_status = 'confirmed'""",
+             AND review_status = 'confirmed' AND deleted = 0""",
         (book_id, name, c["entity_type"]),
     ).fetchone()
     if existing:
@@ -518,7 +518,7 @@ def preview_candidate(candidate_id: str) -> dict | None:
     twin = conn.execute(
         """SELECT id, name, page_end FROM graph_nodes
            WHERE book_id = ? AND name = ? AND entity_type = ?
-             AND review_status = 'confirmed'""",
+             AND review_status = 'confirmed' AND deleted = 0""",
         (c["book_id"], c["name"], c["entity_type"]),
     ).fetchone()
     matched, dropped = _relation_lists(conn, c["book_id"], c["relations_json"])
@@ -579,7 +579,7 @@ def merge_candidate(candidate_id: str, node_id: str) -> dict:
     conn = get_db()
     c = conn.execute("SELECT * FROM candidates WHERE id = ? AND status = 'pending'",
                      (candidate_id,)).fetchone()
-    n = conn.execute("SELECT id, content, book_id, page_end FROM graph_nodes WHERE id = ?",
+    n = conn.execute("SELECT id, content, book_id, page_end FROM graph_nodes WHERE id = ? AND deleted = 0",
                      (node_id,)).fetchone()
     if not c or not n or c["book_id"] != n["book_id"]:
         conn.close()

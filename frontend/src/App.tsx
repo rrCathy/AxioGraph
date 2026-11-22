@@ -82,11 +82,12 @@ export default function App() {
 
         <div className="flex-1 flex min-h-0 overflow-hidden">
           <Suspense fallback={<div className="p-6 flex-1"><EmptyState>正在加载…</EmptyState></div>}>
-          {tab === 'workbench' && (
-            <div className="flex-1 min-w-0">
-              <Workbench />
-            </div>
-          )}
+          {/* Workbench stays MOUNTED across tab switches (display toggle, not
+              unmount): flipping to the graph and back must not reset the
+              reader's page position or drop unsaved text edits. */}
+          <div className={tab === 'workbench' ? 'flex-1 min-w-0' : 'hidden'}>
+            <Workbench />
+          </div>
 
           {tab === 'books' && (
             <div className="flex-1 overflow-auto">

@@ -87,7 +87,7 @@ def confirmed_nodes(book_id: str, q: str = ""):
     conn = get_db()
     rows = conn.execute(
         """SELECT id, name, entity_type, page_start, page_end FROM graph_nodes
-           WHERE book_id = ? AND review_status = 'confirmed' AND name LIKE ?
+           WHERE book_id = ? AND review_status = 'confirmed' AND deleted = 0 AND name LIKE ?
            ORDER BY name LIMIT 500""",
         (book_id, f"%{q}%"),
     ).fetchall()
@@ -144,14 +144,16 @@ def cancel(task_id: str):
 def clear_confirmed_nodes(book_id: str):
     _require_book(book_id)
     conn = get_db()
+    # Rerun overwrite: hard-delete LIVE confirmed nodes only — whatever the
+    # reader put in the recycle bin stays theirs.
     ids = [r["id"] for r in conn.execute(
-        "SELECT id FROM graph_nodes WHERE book_id = ? AND review_status = 'confirmed'",
+        "SELECT id FROM graph_nodes WHERE book_id = ? AND review_status = 'confirmed' AND deleted = 0",
         (book_id,),
     )]
     for node_id in ids:
         conn.execute("DELETE FROM graph_edges WHERE source_id = ? OR target_id = ?",
                      (node_id, node_id))
-    conn.execute("DELETE FROM graph_nodes WHERE book_id = ? AND review_status = 'confirmed'",
+    conn.execute("DELETE FROM graph_nodes WHERE book_id = ? AND review_status = 'confirmed' AND deleted = 0",
                  (book_id,))
     from graph_store import sync_book_counts
     sync_book_counts(conn, book_id)

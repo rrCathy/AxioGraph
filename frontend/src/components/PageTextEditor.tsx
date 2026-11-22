@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { EditorContent, useEditor } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
 import Button from './ui/Button'
@@ -21,12 +21,18 @@ interface Props {
   text: string
   onSave: (text: string) => void
   onQuote: (text: string) => void
+  /** Promote the current selection to a graph node (opens the dialog). */
+  onPromote: (text: string) => void
+  /** Ask AI about the current selection (opens the dialog). */
+  onAsk: (text: string) => void
   onDirtyChange?: (dirty: boolean) => void
   saving: boolean
 }
 
+interface SelPos { left: number; top: number }
+
 export default function PageTextEditor({
-  text, onSave, onQuote, onDirtyChange, saving,
+  text, onSave, onQuote, onPromote, onAsk, onDirtyChange, saving,
 }: Props) {
   const editor = useEditor({
     extensions: [StarterKit],
@@ -40,9 +46,11 @@ export default function PageTextEditor({
     },
   })
   const [selectedCount, setSelectedCount] = useState(0)
+  const [selPos, setSelPos] = useState<SelPos | null>(null)
   const [dirty, setDirty] = useState(false)
   const [justSaved, setJustSaved] = useState(false)
   const [fontSize, setFontSize] = useState(initialFontSize)
+  const scrollRef = useRef<HTMLDivElement>(null)
 
   const changeFontSize = (px: number) => {
     setFontSize(px)
@@ -61,7 +69,25 @@ export default function PageTextEditor({
     if (!editor) return
     const onSelection = () => {
       const { from, to } = editor.state.selection
-      setSelectedCount(editor.state.doc.textBetween(from, to, '\n').trim().length)
+      const selected = editor.state.doc.textBetween(from, to, '\n').trim()
+      setSelectedCount(selected.length)
+      if (!selected.length || from === to) {
+        setSelPos(null)
+        return
+      }
+      // Anchor the toolbar at the selection start, clamped inside the pane.
+      try {
+        const start = editor.view.coordsAtPos(from)
+        const pane = scrollRef.current?.getBoundingClientRect()
+        if (pane) {
+          setSelPos({
+            left: Math.max(8, Math.min(start.left - pane.left, pane.width - 260)),
+            top: Math.max(4, start.top - pane.top - 44),
+          })
+        }
+      } catch {
+        setSelPos(null)
+      }
     }
     const onChange = () => {
       setDirty(true)
@@ -75,12 +101,26 @@ export default function PageTextEditor({
     }
   }, [editor, onDirtyChange])
 
-  const quoteSelection = () => {
+  // Hide the floating bar while the pane scrolls — it would drift away from
+  // the text it refers to; the header buttons still work for the selection.
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    const onScroll = () => setSelPos(null)
+    el.addEventListener('scroll', onScroll, { passive: true })
+    return () => el.removeEventListener('scroll', onScroll)
+  }, [])
+
+  const withSelection = (fn: (s: string) => void) => {
     if (!editor) return
     const { from, to } = editor.state.selection
     const selected = editor.state.doc.textBetween(from, to, '\n').trim()
-    if (selected) onQuote(selected)
+    if (selected) fn(selected)
   }
+
+  const quoteSelection = () => withSelection(onQuote)
+  const promoteSelection = () => { withSelection(onPromote); setSelPos(null) }
+  const askSelection = () => { withSelection(onAsk); setSelPos(null) }
 
   const save = () => {
     if (!editor) return
@@ -107,6 +147,12 @@ export default function PageTextEditor({
             {FONT_SIZES.map((px) => <option key={px} value={px}>{px}px</option>)}
           </select>
         </label>
+        <Button size="sm" variant="ghost" onClick={promoteSelection} disabled={selectedCount === 0}>
+          提升
+        </Button>
+        <Button size="sm" variant="ghost" onClick={askSelection} disabled={selectedCount === 0}>
+          问 AI
+        </Button>
         <Button size="sm" onClick={quoteSelection} disabled={selectedCount === 0}>
           引用选中
         </Button>
@@ -114,7 +160,23 @@ export default function PageTextEditor({
           {justSaved && !dirty ? '已保存' : '保存文本'}
         </Button>
       </div>
-      <div className="flex-1 overflow-auto ag-right-pane bg-ag-bg2" style={{ padding: '24px 28px' }}>
+      <div
+        ref={scrollRef}
+        className="flex-1 overflow-auto ag-right-pane bg-ag-bg2 relative"
+        style={{ padding: '24px 28px' }}
+      >
+        {selPos && (
+          <div
+            className="absolute z-20 flex items-center gap-1 rounded-btn border border-ag-line2 bg-ag-bg3 px-1.5 py-1 shadow-overlay"
+            style={{ left: selPos.left, top: selPos.top }}
+            role="toolbar"
+            aria-label="选中文字操作"
+          >
+            <Button size="sm" variant="primary" onClick={promoteSelection}>提升</Button>
+            <Button size="sm" onClick={askSelection}>问 AI</Button>
+            <Button size="sm" variant="ghost" onClick={quoteSelection}>引用</Button>
+          </div>
+        )}
         <div
           style={{ maxWidth: 'var(--ag-measure)', '--ag-editor-fs': `${fontSize}px` } as React.CSSProperties}
         >
