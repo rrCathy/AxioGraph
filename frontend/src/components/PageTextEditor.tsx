@@ -134,7 +134,7 @@ export default function PageTextEditor({
     <div className="flex flex-col h-full min-h-0">
       <div className="shrink-0 flex items-center gap-2 px-3 py-2 border-b border-ag-line1 bg-ag-bg1">
         <span className="text-caption text-ag-ink3 flex-1 ag-mono">
-          {selectedCount > 0 ? `已选 ${selectedCount} 字` : `${text.length} 字符`}
+          {selectedCount > 0 ? `已选 ${selectedCount} 字` : ''}
         </span>
         <label className="flex items-center gap-1.5 text-caption text-ag-ink3">
           <span className="shrink-0">字号</span>

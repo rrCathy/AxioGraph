@@ -56,6 +56,7 @@ export default function Workbench() {
   const [funcOpen, setFuncOpen] = useState(false)
   const [structRefreshKey, setStructRefreshKey] = useState(0)
   const [autoOpen, setAutoOpen] = useState(false)
+  const [moreActionsOpen, setMoreActionsOpen] = useState(false)
   const [autoStatus, setAutoStatus] = useState<AutoStatus | null>(null)
   const autoStatusRef = useRef<AutoStatus | null>(null)
   const [autoRange, setAutoRange] = useState({ start: 1, end: 0 })
@@ -819,25 +820,45 @@ export default function Workbench() {
                     >
                       {t('ai.readBtn')}
                     </Button>
-                    <div className="grid grid-cols-2 gap-1.5">
-                      <Button size="sm" disabled={!bookId || !total || task.active} onClick={() => void runVisionOcr()}>
-                        {t('workbench.visionOcr')}
+                    {/* Low-frequency / debug actions live behind a disclosure;
+                        the reader's daily loop is just the two buttons above. */}
+                    {!moreActionsOpen && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="w-full"
+                        disabled={!bookId}
+                        onClick={() => setMoreActionsOpen(true)}
+                      >
+                        {t('workbench.moreActions')} ▾
                       </Button>
-                      <Button size="sm" disabled={!bookId || !total || task.active} onClick={() => void runOcr()}>
-                        {t('workbench.ocr')}
-                      </Button>
-                    </div>
-                    <Button
-                      size="sm"
-                      variant={autoOpen ? 'primary' : 'ghost'}
-                      disabled={!bookId || !total}
-                      onClick={() => setAutoOpen(!autoOpen)}
-                    >
-                      {autoOpen ? t('workbench.autoClose') : t('workbench.autoTitle')}
-                    </Button>
-                    <Button size="sm" variant="ghost" disabled={!bookId || task.active} onClick={() => setConfirmReimport(true)}>
-                      {t('workbench.reimport')}
-                    </Button>
+                    )}
+                    {moreActionsOpen && (
+                      <>
+                        <div className="grid grid-cols-2 gap-1.5">
+                          <Button size="sm" disabled={!bookId || !total || task.active} onClick={() => void runVisionOcr()}>
+                            {t('workbench.visionOcr')}
+                          </Button>
+                          <Button size="sm" disabled={!bookId || !total || task.active} onClick={() => void runOcr()}>
+                            {t('workbench.ocr')}
+                          </Button>
+                        </div>
+                        <Button
+                          size="sm"
+                          variant={autoOpen ? 'primary' : 'ghost'}
+                          disabled={!bookId || !total}
+                          onClick={() => setAutoOpen(!autoOpen)}
+                        >
+                          {autoOpen ? t('workbench.autoClose') : t('workbench.autoTitle')}
+                        </Button>
+                        <Button size="sm" variant="ghost" disabled={!bookId || task.active} onClick={() => setConfirmReimport(true)}>
+                          {t('workbench.reimport')}
+                        </Button>
+                        <Button size="sm" variant="ghost" className="w-full" onClick={() => setMoreActionsOpen(false)}>
+                          {t('workbench.moreActions')} ▴
+                        </Button>
+                      </>
+                    )}
                   </div>
 
                   {autoOpen && (

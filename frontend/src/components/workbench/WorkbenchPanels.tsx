@@ -10,19 +10,15 @@ import { useI18n } from '../../i18n/useI18n'
 export type ZoomMode = 'fitw' | 'fitp' | 'orig'
 
 export function QuoteStrip({ quote, onClear }: { quote: string; onClear: () => void }) {
+  // No quote pinned yet: render nothing instead of spending a row on a dash.
+  if (!quote) return null
   return (
     <div className="shrink-0 flex items-center gap-2 px-3 py-1.5 border-b border-ag-line1 bg-ag-bg2">
-      {quote ? (
-        <>
-          <span className="ag-quote-index shrink-0">[1]</span>
-          <span className="ag-quote flex-1 text-caption text-ag-ink2 truncate">“{quote.slice(0, 140)}”</span>
-          <button onClick={onClear} className="ag-focus-ring text-caption text-ag-ink3 hover:text-ag-ink1 shrink-0">
-            清除
-          </button>
-        </>
-      ) : (
-        <span className="text-caption text-ag-ink3 ag-mono">— 尚未挂引用 —</span>
-      )}
+      <span className="ag-quote-index shrink-0">[1]</span>
+      <span className="ag-quote flex-1 text-caption text-ag-ink2 truncate">“{quote.slice(0, 140)}”</span>
+      <button onClick={onClear} className="ag-focus-ring text-caption text-ag-ink3 hover:text-ag-ink1 shrink-0">
+        清除
+      </button>
     </div>
   )
 }
@@ -70,7 +66,9 @@ export function LayoutBar({
   const { t, lang } = useI18n()
   if (!layout) return null
   const c = layout.counts || {}
-  const counts = t('workbench.layoutCounts')
+  // Full census (zeroes included) lives in the tooltip for debugging; the bar
+  // itself only shows block kinds that actually occur on this page.
+  const census = t('workbench.layoutCounts')
     .replace('{h}', String(c.H ?? 0))
     .replace('{t}', String(c.TABLE ?? 0))
     .replace('{p}', String(c.P ?? 0))
@@ -84,11 +82,30 @@ export function LayoutBar({
     .filter(([, , n]) => n > 0)
     .map(([, label, n]) => `${label} ${n}`)
     .join(' · ')
+  // Non-zero block kinds only: a page with one heading and two paragraphs
+  // should not spend a full bar on six counters.
+  const blockCounts: string[] = []
+  const kindLabel: Record<string, [string, string]> = {
+    H: ['标题', 'headings'], TABLE: ['表', 'tables'], P: ['正文', 'paragraphs'],
+    FORMULA: ['公式', 'formulas'], DIAGRAM: ['交换图', 'comm. diagrams'],
+    FIGURE: ['插图', 'figures'],
+  }
+  for (const [k, [zh, en]] of Object.entries(kindLabel)) {
+    const n = (c as Record<string, number | undefined>)[k] ?? 0
+    if (n > 0) blockCounts.push(`${lang === 'zh' ? zh : en} ${n}`)
+  }
 
   return (
     <div className="shrink-0 flex items-center gap-2 px-3 py-1.5 border-b border-ag-line1 bg-ag-bg2 flex-wrap">
-      <span className="text-caption text-ag-ink3">{t('workbench.layoutBar')}</span>
-      <span className="ag-mono text-micro text-ag-ink2">{counts}</span>
+      <span
+        className="text-caption text-ag-ink3"
+        title={`${census}${layout.formula_total ? ` · ${t('workbench.formulaStrip').replace('{r}', String(layout.formula_recognized ?? 0)).replace('{n}', String(layout.formula_total))}` : ''}`}
+      >
+        {t('workbench.layoutBar')}
+      </span>
+      {blockCounts.length > 0 && (
+        <span className="ag-mono text-micro text-ag-ink2">{blockCounts.join(' · ')}</span>
+      )}
       {envCounts && (
         <button
           onClick={() => onShowEnvs(true)}
@@ -98,32 +115,15 @@ export function LayoutBar({
           {envCounts}
         </button>
       )}
-      <span className={`text-micro px-1.5 py-0.5 rounded-badge border ${
-        layout.page_kind === 'text_layer'
-          ? 'border-ag-line2 text-ag-ink3'
-          : 'border-ag-statusOcr text-ag-statusOcr'}`}>
-        {layout.page_kind === 'text_layer'
-          ? t('workbench.layoutKindText')
-          : layout.page_kind === 'mixed_ocr'
-            ? t('workbench.layoutKindMixed')
-            : t('workbench.layoutKindScan')}
-      </span>
-      {layout.text_source && (
-        <span className="ag-mono text-micro text-ag-ink3">
-          {t('workbench.layoutSource')}: {layout.text_source === 'rapidocr'
-            ? t('workbench.layoutSourceOcr')
-            : t('workbench.layoutSourceLayer')}
+      {layout.page_kind !== 'text_layer' && (
+        <span className="text-micro px-1.5 py-0.5 rounded-badge border border-ag-statusOcr text-ag-statusOcr">
+          {layout.page_kind === 'mixed_ocr'
+            ? (lang === 'zh' ? '混合' : t('workbench.layoutKindMixed'))
+            : (lang === 'zh' ? '扫描' : t('workbench.layoutKindScan'))}
         </span>
       )}
-      {(c.FIGURE ?? 0) > 0 && (
-        <span className="text-micro text-ag-ink3">{t('workbench.layoutFigures')}</span>
-      )}
-      {layout.formula_total != null && layout.formula_total > 0 && (
-        <span className="ag-mono text-micro text-ag-ink3">
-          {t('workbench.formulaStrip')
-            .replace('{r}', String(layout.formula_recognized ?? 0))
-            .replace('{n}', String(layout.formula_total))}
-        </span>
+      {layout.text_source && layout.text_source !== 'text_layer' && (
+        <span className="ag-mono text-micro text-ag-ink3">{t('workbench.layoutSourceOcr')}</span>
       )}
       <div className="ml-auto flex items-center gap-1">
         <button
