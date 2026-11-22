@@ -68,12 +68,18 @@
   --ag-disabled-line: #24282F;
 
   --ag-radius-page: 2px;
-  --ag-radius-body: 2px;
-  --ag-radius-btn: 6px;
-  --ag-radius-card: 8px;
-  --ag-radius-overlay: 10px;
+  --ag-radius-body: 4px;
+  --ag-radius-btn: 7px;
+  --ag-radius-card: 10px;
+  --ag-radius-overlay: 14px;
   --ag-radius-badge: 4px;
   --ag-radius-dot: 9999px;
+
+  /* Elevation: dark mode separates surfaces with lighter-than-background
+     fills (bg-0..5) plus these soft shadows for floating layers. */
+  --ag-shadow-1: 0 1px 3px rgba(0, 0, 0, .35);
+  --ag-shadow-2: 0 4px 16px rgba(0, 0, 0, .45);
+  --ag-shadow-3: 0 16px 48px rgba(0, 0, 0, .55);
 
   --ag-topbar-h: 44px;
   --ag-tab-h: 40px;
@@ -155,6 +161,10 @@
   --ag-disabled-bg: #EDE8DC;
   --ag-disabled-ink: #8E8B82;
   --ag-disabled-line: #DAD4C6;
+
+  --ag-shadow-1: 0 1px 2px rgba(35, 38, 42, .07);
+  --ag-shadow-2: 0 4px 14px rgba(35, 38, 42, .10);
+  --ag-shadow-3: 0 16px 44px rgba(35, 38, 42, .16);
 }
 
 @media (prefers-reduced-motion: reduce) {

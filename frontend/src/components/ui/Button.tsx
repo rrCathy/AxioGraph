@@ -18,13 +18,15 @@ const sizes: Record<Size, string> = {
 
 const variants: Record<Variant, string> = {
   primary: 'bg-ag-cinnabar text-ag-onCinnabar border border-transparent hover:bg-ag-cinnabarHover active:bg-ag-cinnabarPress',
-  secondary: 'bg-transparent text-ag-ink2 border border-ag-line2 hover:bg-ag-bg4 hover:border-ag-line3 hover:text-ag-ink1',
-  danger: 'bg-transparent text-ag-danger border border-ag-danger hover:bg-ag-bg4',
+  // Quiet secondary: no resting border — hierarchy comes from fill and text
+  // color; the hover fill alone marks interactivity.
+  secondary: 'bg-transparent text-ag-ink2 border border-transparent hover:bg-ag-bg4 hover:text-ag-ink1',
+  danger: 'bg-transparent text-ag-danger border border-transparent hover:bg-ag-bg4',
   ghost: 'bg-transparent text-ag-ink3 border border-transparent hover:bg-ag-bg4 hover:text-ag-ink1',
 }
 
 const disabledStyle =
-  'disabled:bg-ag-disabledBg disabled:text-ag-disabledInk disabled:border-ag-disabledLine disabled:cursor-not-allowed'
+  'disabled:bg-ag-disabledBg disabled:text-ag-disabledInk disabled:border-transparent disabled:cursor-not-allowed'
 
 export default function Button({
   variant = 'secondary', size = 'md', loading = false, icon,
@@ -34,7 +36,7 @@ export default function Button({
     <button
       {...rest}
       disabled={disabled || loading}
-      className={`ag-focus-ring inline-flex items-center justify-center gap-1.5 shrink-0 rounded-btn font-medium transition-colors ${sizes[size]} ${variants[variant]} ${disabledStyle} ${className}`}
+      className={`ag-focus-ring inline-flex items-center justify-center gap-1.5 shrink-0 rounded-btn font-medium transition duration-150 active:scale-[.98] disabled:active:scale-100 ${sizes[size]} ${variants[variant]} ${disabledStyle} ${className}`}
     >
       {loading ? <span className="ag-mono text-micro">...</span> : icon}
       {children}

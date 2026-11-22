@@ -27,7 +27,9 @@ export default function App() {
         <header className="h-topbar shrink-0 bg-ag-bg1 border-b border-ag-line1 flex items-center px-4 gap-4">
           <div className="flex items-center gap-2.5">
             <span className="text-h2 text-ag-cinnabar" aria-hidden="true">◇</span>
-            <span className="font-medium text-body text-ag-ink1 tracking-tight">{t('app.title')}</span>
+            <span className="font-reading text-[17px] font-semibold text-ag-ink1 tracking-tight">
+              {t('app.title')}
+            </span>
             <span className="text-caption text-ag-ink3 bg-ag-bg2 px-1.5 py-0.5 rounded-badge ag-mono">
               {t('app.subtitle')}
             </span>

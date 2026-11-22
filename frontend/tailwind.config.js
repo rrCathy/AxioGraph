@@ -52,10 +52,10 @@ export default {
         },
       },
       fontFamily: {
-        sans: ['AG UI', 'Inter', 'SF Pro Text', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', 'sans-serif'],
-        ui: ['AG UI', 'Inter', 'SF Pro Text', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', 'sans-serif'],
-        reading: ['AG Reading', 'Inter', 'Source Han Serif SC', 'Noto Serif SC', 'Songti SC', 'SimSun', 'serif'],
-        mono: ['AG Mono', 'JetBrains Mono', 'SFMono-Regular', 'Consolas', 'monospace'],
+        sans: ['Inter Variable', 'AG UI', 'Inter', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', 'sans-serif'],
+        ui: ['Inter Variable', 'AG UI', 'Inter', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', 'sans-serif'],
+        reading: ['AG Reading', 'Source Han Serif SC', 'Noto Serif SC', 'Songti SC', 'Inter Variable', 'SimSun', 'serif'],
+        mono: ['JetBrains Mono Variable', 'AG Mono', 'JetBrains Mono', 'SFMono-Regular', 'Consolas', 'monospace'],
       },
       fontSize: {
         display: ['24px', { lineHeight: '1.30' }],
@@ -70,9 +70,16 @@ export default {
         '2xs': ['0.8125rem', { lineHeight: '1.5' }],
       },
       borderRadius: {
-        page: '2px', body: '2px', btn: '6px', card: '8px', overlay: '10px',
-        badge: '4px', dot: '9999px',
-        xl: '10px', '2xl': '10px',
+        // Resolved from tokens.css — single source of truth.
+        page: 'var(--ag-radius-page)', body: 'var(--ag-radius-body)',
+        btn: 'var(--ag-radius-btn)', card: 'var(--ag-radius-card)',
+        overlay: 'var(--ag-radius-overlay)', badge: 'var(--ag-radius-badge)',
+        dot: '9999px',
+        xl: 'var(--ag-radius-overlay)', '2xl': 'var(--ag-radius-overlay)',
+      },
+      boxShadow: {
+        1: 'var(--ag-shadow-1)', 2: 'var(--ag-shadow-2)', 3: 'var(--ag-shadow-3)',
+        overlay: 'var(--ag-shadow-2)',
       },
       spacing: {
         topbar: '44px', tab: '40px', gutter: '24px', well: '20px', mat: '12px',

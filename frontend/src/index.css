@@ -2,7 +2,11 @@
 @tailwind components;
 @tailwind utilities;
 
-/* ─── Local system fonts only (no webfont downloads) ──── */
+/* ─── Fonts ─────────────────────────────────────────────
+   Inter Variable + JetBrains Mono Variable are self-hosted via
+   @fontsource-variable (bundled by Vite, no runtime downloads).
+   The @font-face blocks below only aggregate LOCAL system fonts,
+   chiefly for CJK glyphs that Inter/JBM do not cover. ──── */
 @font-face {
   font-family: 'AG UI';
   src: local('Inter'), local('SF Pro Text'), local('PingFang SC'),
@@ -29,7 +33,8 @@
     transition: background-color var(--ag-motion), color var(--ag-motion);
   }
   body {
-    font-family: var(--ag-font-ui, 'AG UI', Inter, 'PingFang SC', 'Microsoft YaHei', sans-serif);
+    font-family: 'Inter Variable', var(--ag-font-ui, 'AG UI'), Inter,
+                 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', sans-serif;
     font-size: 14px;
     line-height: 1.6;
     margin: 0;
@@ -65,8 +70,8 @@
 
 /* ─── Reading voice (TipTap page transcription) ──────── */
 .page-editor-prose {
-  font-family: 'AG Reading', Inter, 'Source Han Serif SC', 'Noto Serif SC',
-               'Songti SC', SimSun, serif;
+  font-family: 'AG Reading', 'Source Han Serif SC', 'Noto Serif SC',
+               'Songti SC', 'Inter Variable', SimSun, serif;
   font-size: var(--ag-editor-fs, 15px);  /* user-set via the editor toolbar */
   line-height: 1.7;
   letter-spacing: .01em;
@@ -78,7 +83,11 @@
 }
 .page-editor-prose p { margin: 0 0 12px; }
 .page-editor-prose p:empty::before { content: ' '; }
-.ag-mono { font-family: 'AG Mono', 'JetBrains Mono', Consolas, monospace; font-variant-numeric: tabular-nums; }
+.ag-mono {
+  font-family: 'JetBrains Mono Variable', 'AG Mono', 'JetBrains Mono',
+               Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+}
 
 /* ─── Paper sheet: mat + multiply (three-step lightness) ─ */
 .ag-page-well {
